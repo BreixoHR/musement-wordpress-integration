@@ -1,0 +1,250 @@
+<?php
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+function musement_checkout_customer_from_post(): array
+{
+    return [
+        'first_name' => isset($_POST['first_name']) ? sanitize_text_field(wp_unslash($_POST['first_name'])) : '',
+        'last_name' => isset($_POST['last_name']) ? sanitize_text_field(wp_unslash($_POST['last_name'])) : '',
+        'email' => isset($_POST['email']) ? sanitize_email(wp_unslash($_POST['email'])) : '',
+        'phone' => isset($_POST['phone']) ? sanitize_text_field(wp_unslash($_POST['phone'])) : '',
+    ];
+}
+
+function musement_checkout_payment_method_from_post(): string
+{
+    $payment_method = isset($_POST['payment_method']) ? sanitize_key(wp_unslash($_POST['payment_method'])) : 'stripe';
+    $allowed = ['stripe', 'card'];
+
+    return in_array($payment_method, $allowed, true) ? $payment_method : 'stripe';
+}
+
+function musement_debug_payloads_enabled(): bool
+{
+    if (defined('MUSEMENT_DEBUG_PAYLOADS')) {
+        return (bool) MUSEMENT_DEBUG_PAYLOADS;
+    }
+
+    return (bool) get_option('musement_debug_payloads', false);
+}
+
+function musement_checkout_start_ajax(): void
+{
+    check_ajax_referer('musement_ajax', 'nonce');
+
+    $items = musement_cart_items();
+    $summary = musement_cart_total($items);
+    $customer = musement_checkout_customer_from_post();
+    $payment_method = musement_checkout_payment_method_from_post();
+
+    if (!$items) {
+        wp_send_json_error([
+            'message' => __('El carrito esta vacio.', 'musement-integration'),
+        ], 400);
+    }
+
+    if (!$customer['first_name'] || !$customer['last_name'] || !$customer['email'] || !$customer['phone']) {
+        wp_send_json_error([
+            'message' => __('Faltan datos del cliente.', 'musement-integration'),
+        ], 400);
+    }
+
+    $order_id = musement_orders_create($customer, $items, $summary);
+    $order = musement_orders_get($order_id);
+    $cart_uuid = musement_remote_cart_get_id();
+    if ($cart_uuid) {
+        // reusar integration_errors_json para no tocar esquema DB
+        $existing = json_decode($order['integration_errors_json'] ?? '[]', true) ?: [];
+        $existing['musement_cart_uuid'] = $cart_uuid;
+        musement_orders_update($order_id, [
+            'integration_errors_json' => $existing,
+        ]);
+    }
+
+    if (!$order) {
+        wp_send_json_error([
+            'message' => __('No se pudo crear el pedido local.', 'musement-integration'),
+        ], 500);
+    }
+
+    $order['selected_payment_method'] = $payment_method;
+    $payment = musement_payment_create_session($order);
+    $debug_payloads = [];
+
+    if (musement_debug_payloads_enabled()) {
+        $debug_payloads['salesforce'] = musement_salesforce_order_payload($order);
+    }
+
+    if (is_wp_error($payment)) {
+        $payment_error_data = is_array($payment->get_error_data()) ? $payment->get_error_data() : [];
+
+        wp_send_json_success([
+            'message' => $payment->get_error_message(),
+            'requires_payment_gateway' => true,
+            'order_id' => $order_id,
+            'order_reference' => $order['order_reference'],
+            'payment_gateway' => sanitize_key($payment_error_data['gateway'] ?? musement_payment_gateway()),
+            'payment_error_code' => sanitize_key($payment->get_error_code()),
+            'status' => 'pending_payment',
+            'debug_payloads' => $debug_payloads,
+        ]);
+    }
+
+    if (!empty($payment['payment_reference'])) {
+        musement_orders_update($order_id, [
+            'payment_reference' => $payment['payment_reference'],
+        ]);
+    }
+
+    $message = !empty($payment['payment_url'])
+    ? __('Pedido creado. Redirigiendo a la pasarela de pago.', 'musement-integration')
+    : __('Pedido creado. Pago pendiente.', 'musement-integration');
+
+
+    wp_send_json_success([
+        'message' => $message,
+        'order_id' => $order_id,
+        'order_reference' => $order['order_reference'],
+        'payment_url' => esc_url_raw($payment['payment_url'] ?? ''),
+        'payment_reference' => sanitize_text_field($payment['payment_reference'] ?? ''),
+        'payment_method' => $payment_method,
+        'payment_gateway' => sanitize_key($payment['gateway'] ?? musement_payment_gateway()),
+        'status' => sanitize_text_field($payment['status'] ?? 'pending_payment'),
+        'debug_payloads' => $debug_payloads,
+        'client_secret' => sanitize_text_field($payment['client_secret'] ?? ''),
+        'stripe_publishable_key' => ($payment['gateway'] ?? '') === 'stripe' ? musement_stripe_publishable_key() : '',
+
+    ]);
+}
+
+function musement_checkout_test_paid_ajax(): void
+{
+    check_ajax_referer('musement_ajax', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error([
+            'message' => __('No tienes permisos para confirmar pagos de prueba.', 'musement-integration'),
+        ], 403);
+    }
+
+    $order_reference = isset($_POST['order_reference']) ? sanitize_text_field(wp_unslash($_POST['order_reference'])) : '';
+    $payment_reference = isset($_POST['payment_reference']) ? sanitize_text_field(wp_unslash($_POST['payment_reference'])) : '';
+
+    if (!$order_reference || !$payment_reference) {
+        wp_send_json_error([
+            'message' => __('Falta la referencia del pedido o del pago.', 'musement-integration'),
+        ], 400);
+    }
+
+    $order = musement_orders_get_by_reference($order_reference);
+
+    if (!$order) {
+        wp_send_json_error([
+            'message' => __('No se encontro el pedido local.', 'musement-integration'),
+        ], 404);
+    }
+
+    $result = musement_payment_complete_order((int) $order['id'], $payment_reference);
+
+    if (is_wp_error($result)) {
+        wp_send_json_error([
+            'message' => $result->get_error_message(),
+            'order_reference' => $order_reference,
+        ], 502);
+    }
+
+    wp_send_json_success([
+        'message' => __('Pago confirmado y reserva enviada a Musement.', 'musement-integration'),
+        'order_reference' => $result['order_reference'],
+        'status' => $result['status'],
+        'musement_booking_reference' => $result['musement_booking_reference'] ?? '',
+    ]);
+}
+
+add_action('wp_ajax_musement_checkout_start', 'musement_checkout_start_ajax');
+add_action('wp_ajax_nopriv_musement_checkout_start', 'musement_checkout_start_ajax');
+add_action('wp_ajax_musement_checkout_test_paid', 'musement_checkout_test_paid_ajax');
+
+function musement_fetch_tickets_ajax(): void {
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'No permisos'], 403);
+    }
+
+    // recibe order_reference o order_uuid y activity_uuid
+    $order_ref = isset($_POST['order_reference']) ? sanitize_text_field(wp_unslash($_POST['order_reference'])) : '';
+    $order_uuid = isset($_POST['order_uuid']) ? sanitize_text_field(wp_unslash($_POST['order_uuid'])) : '';
+    $activity_uuid = isset($_POST['activity_uuid']) ? sanitize_text_field(wp_unslash($_POST['activity_uuid'])) : '';
+
+    if (!$order_uuid && !$order_ref) {
+        wp_send_json_error(['message' => 'Falta order_uuid o order_reference'], 400);
+    }
+
+    if (!$order_uuid) {
+        $order = musement_orders_get_by_reference($order_ref);
+        if (!$order || empty($order['musement_response_json'])) {
+            wp_send_json_error(['message' => 'Pedido remoto no encontrado en DB'], 404);
+        }
+        $mresponse = is_array($order['musement_response_json']) ? $order['musement_response_json'] : json_decode($order['musement_response_json'], true);
+        $order_uuid = $mresponse['uuid'] ?? $mresponse['identifier'] ?? $order_uuid;
+    }
+
+    if (!$activity_uuid) {
+        // intenta sacar una activity_uuid desde items guardados
+        $order = musement_orders_get_by_reference($order_ref);
+        $items = $order['items'] ?? [];
+        $activity_uuid = $items[0]['activity_uuid'] ?? '';
+        if (!$activity_uuid) {
+            wp_send_json_error(['message' => 'Falta activity_uuid y no se ha podido inferir'], 400);
+        }
+    }
+
+    $tickets = musement_remote_get_activity_tickets($order_uuid, $activity_uuid);
+    if (is_wp_error($tickets)) {
+        wp_send_json_error(['message' => $tickets->get_error_message(), 'data' => $tickets->get_error_data() ?? []], 502);
+    }
+
+    wp_send_json_success(['tickets' => $tickets]);
+}
+add_action('wp_ajax_musement_fetch_tickets', 'musement_fetch_tickets_ajax');
+
+function musement_create_prebooking(array $order)
+{
+    $endpoint = defined('MUSEMENT_PREBOOKING_ENDPOINT')
+        ? MUSEMENT_PREBOOKING_ENDPOINT
+        : '';
+
+    if (!$endpoint) {
+        return new WP_Error('no_endpoint', 'Musement endpoint no configurado');
+    }
+
+    $payload = [
+        'order_reference' => $order['order_reference'],
+        'items' => $order['items'],
+        'customer' => $order['customer'],
+        'total' => $order['total'] ?? 0,
+        'currency' => $order['currency'] ?? 'EUR',
+    ];
+
+    $response = wp_remote_post($endpoint, [
+        'headers' => [
+            'Content-Type' => 'application/json',
+        ],
+        'body' => wp_json_encode($payload),
+        'timeout' => 20,
+    ]);
+
+    if (is_wp_error($response)) {
+        return $response;
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    if (empty($body)) {
+        return new WP_Error('empty_response', 'Musement devolvió respuesta vacía');
+    }
+
+    return $body;
+}
