@@ -141,9 +141,128 @@ function musement_stripe_create_payment_intent(array $order, array $context)
     }
 
     return [
-        'gateway' => 'stripe',
+        'gateway'           => 'stripe',
         'payment_reference' => sanitize_text_field($body['id']),
-        'client_secret' => sanitize_text_field($body['client_secret']),
-        'status' => sanitize_text_field($body['status'] ?? 'requires_payment_method'),
+        'client_secret'     => sanitize_text_field($body['client_secret']),
+        'status'            => sanitize_text_field($body['status'] ?? 'requires_payment_method'),
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Stripe Webhook verification & event normalisation
+// ---------------------------------------------------------------------------
+
+add_filter('musement_payment_webhook_is_valid', 'musement_stripe_webhook_is_valid', 10, 4);
+
+/**
+ * Verify the Stripe-Signature header using the configured webhook secret.
+ *
+ * Stripe signs each webhook with a timestamp + HMAC-SHA256 signature.
+ * The header looks like: t=<timestamp>,v1=<signature>[,v0=<old_signature>]
+ * We validate by recomputing the expected signature and comparing with
+ * hash_equals to prevent timing attacks.
+ *
+ * @see https://docs.stripe.com/webhooks/signatures
+ */
+function musement_stripe_webhook_is_valid($is_valid, WP_REST_Request $request, array $payload, string $gateway): bool
+{
+    if ($is_valid || $gateway !== 'stripe') {
+        return (bool) $is_valid;
+    }
+
+    $secret = musement_stripe_webhook_secret();
+
+    if (!$secret) {
+        error_log('[MUSEMENT Stripe] Webhook secret not configured — rejecting request.');
+        return false;
+    }
+
+    $sig_header = (string) $request->get_header('stripe_signature');
+
+    if (!$sig_header) {
+        error_log('[MUSEMENT Stripe] Missing Stripe-Signature header.');
+        return false;
+    }
+
+    // Parse t= and v1= from the header.
+    $timestamp  = null;
+    $signatures = [];
+
+    foreach (explode(',', $sig_header) as $part) {
+        $part = trim($part);
+        if (strncmp($part, 't=', 2) === 0) {
+            $timestamp = substr($part, 2);
+        } elseif (strncmp($part, 'v1=', 3) === 0) {
+            $signatures[] = substr($part, 3);
+        }
+    }
+
+    if (!$timestamp || empty($signatures)) {
+        error_log('[MUSEMENT Stripe] Malformed Stripe-Signature header.');
+        return false;
+    }
+
+    // Reject webhooks older than 5 minutes to prevent replay attacks.
+    $tolerance = 300; // seconds
+    if (abs(time() - (int) $timestamp) > $tolerance) {
+        error_log('[MUSEMENT Stripe] Webhook timestamp is too old or too far in the future.');
+        return false;
+    }
+
+    $raw_body = $request->get_body();
+    $signed_payload = $timestamp . '.' . $raw_body;
+    $expected       = hash_hmac('sha256', $signed_payload, $secret);
+
+    foreach ($signatures as $sig) {
+        if (hash_equals($expected, $sig)) {
+            return true;
+        }
+    }
+
+    error_log('[MUSEMENT Stripe] Webhook signature mismatch.');
+    return false;
+}
+
+add_filter('musement_payment_webhook_event', 'musement_stripe_webhook_event', 10, 4);
+
+/**
+ * Normalise a Stripe webhook event into the internal payment event format.
+ */
+function musement_stripe_webhook_event($event, WP_REST_Request $request, array $payload, string $gateway)
+{
+    if ($event !== null || $gateway !== 'stripe') {
+        return $event;
+    }
+
+    $type = $payload['type'] ?? '';
+
+    // Only process confirmed payment events.
+    $paid = in_array($type, [
+        'payment_intent.succeeded',
+        'charge.succeeded',
+        'checkout.session.completed',
+    ], true);
+
+    // Extract the order reference from metadata (set when creating the PaymentIntent).
+    $object          = $payload['data']['object'] ?? [];
+    $order_reference = sanitize_text_field(
+        $object['metadata']['order_reference']
+            ?? $payload['metadata']['order_reference']
+            ?? ''
+    );
+
+    $payment_reference = sanitize_text_field(
+        $object['id']
+            ?? $payload['id']
+            ?? ''
+    );
+
+    $event_reference = sanitize_text_field($payload['id'] ?? '');
+
+    return [
+        'paid'              => $paid,
+        'order_reference'   => $order_reference,
+        'payment_reference' => $payment_reference,
+        'event_reference'   => $event_reference,
     ];
 }

@@ -39,9 +39,25 @@
                 '<div class="musement-tour__actions">' +
                     '<button class="musement-tour__button" type="button">Ver Disponibilidad</button>' +
                 '</div>' +
-                '<div class="musement-tour__slots"></div>' +
+                // calendar first
                 '<div class="musement-tour__calendar"></div>' +
+                // slots after calendar
+                '<div class="musement-tour__slots"></div>' +
+                // change day button hidden initially
+                '<button class="musement-change-day musement-tour__button" style="display:none; margin-top:10px;">Cambiar día</button>' +
             '</div>';
+        
+        // Attach listener to change day button
+        const changeBtn = article.querySelector('.musement-change-day');
+        if (changeBtn) {
+            changeBtn.addEventListener('click', function () {
+                const calendar = article.querySelector('.musement-tour__calendar');
+                const slots = article.querySelector('.musement-tour__slots');
+                if (calendar) calendar.style.display = '';
+                if (slots) slots.innerHTML = '';
+                changeBtn.style.display = 'none';
+            });
+        }
 
         const media = article.querySelector('.musement-tour__media');
 
@@ -200,10 +216,12 @@
                 
                 const select = document.createElement('select');
                 select.className = 'musement-language-select';
-                select.style.padding = '4px 6px';
+                select.style.padding = '4px 24px 4px 6px';
                 select.style.borderRadius = '4px';
                 select.style.border = '1px solid #cbd5e1';
                 select.style.fontSize = '12px';
+                select.style.minWidth = '100px';
+                select.style.appearance = 'auto';
                 
                 slot.languages.forEach(function(lang) {
                     const option = document.createElement('option');
@@ -233,6 +251,7 @@
 
             // BOTÓN
             const btn = document.createElement('button');
+            btn.className = 'musement-tour__button';
             btn.textContent = hasAvailability ? 'Añadir' : 'Agotado';
             btn.disabled = !hasAvailability;
             
@@ -691,10 +710,13 @@
             });
         }
 
-
-                    console.log("SLOTS NORMALIZADOS:", slots);
-
-                    renderSlots(card, slots);
+                // Hide calendar and show 'Cambiar día' button after selecting a date
+                const calendar = card.querySelector('.musement-tour__calendar');
+                const changeBtn = card.querySelector('.musement-change-day');
+                if (calendar) calendar.style.display = 'none';
+                if (changeBtn) changeBtn.style.display = '';
+                console.log("SLOTS NORMALIZADOS:", slots);
+                renderSlots(card, slots);
 
                 })
                 .catch(function (err) {

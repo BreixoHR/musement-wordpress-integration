@@ -1,13 +1,4 @@
 <?php
-// 🔥 FORZAR LIMPIEZA DE BOM - TEMPORAL
-ob_start();
-header('Content-Type: application/json; charset=utf-8');
-
-// Limpiar cualquier buffer que pueda tener BOM
-while (ob_get_level()) {
-    ob_end_clean();
-}
-ob_start();
 
 if (!defined('ABSPATH')) {
     exit;
@@ -92,26 +83,29 @@ function musement_slot_payload($slot, array $group = []): array {
         }
     }
 
+    // Use the first product's price for the slot-level price, or an empty money object.
+    $first_product = !empty($products) ? $slot['products'][0] : [];
+
     return [
-        'price' => musement_money_payload($product['price'] ?? []),
-        'resolved_product' => musement_resolve_bookable_product($products),
-        'time' => sanitize_text_field($slot['time'] ?? $slot['start_time'] ?? ''),
-        'option_name' => sanitize_text_field($group['name'] ?? ''),
-        'option_feature_code' => sanitize_text_field(
+        'price'                => musement_money_payload($first_product['price'] ?? []),
+        'resolved_product'     => musement_resolve_bookable_product($products),
+        'time'                 => sanitize_text_field($slot['time'] ?? $slot['start_time'] ?? ''),
+        'option_name'          => sanitize_text_field($group['name'] ?? ''),
+        'option_feature_code'  => sanitize_text_field(
             $group['feature_code']
             ?? $group['featureCode']
             ?? ''
-        ),        
-        'option_type' => sanitize_text_field(
+        ),
+        'option_type'          => sanitize_text_field(
             $group['type']
             ?? $group['option_type']
             ?? ''
         ),
-        'min_buy' => isset($slot['min_buy']) ? (int) $slot['min_buy'] : 1,
-        'max_buy' => isset($slot['max_buy']) ? (int) $slot['max_buy'] : 0,
-        'availability' => isset($slot['availability']) ? (int) $slot['availability'] : 0,
-        'languages' => $languages,
-        'products' => $products,
+        'min_buy'     => isset($slot['min_buy'])      ? (int) $slot['min_buy']      : 1,
+        'max_buy'     => isset($slot['max_buy'])      ? (int) $slot['max_buy']      : 0,
+        'availability'=> isset($slot['availability']) ? (int) $slot['availability'] : 0,
+        'languages'   => $languages,
+        'products'    => $products,
     ];
 }
 
@@ -166,7 +160,7 @@ function musement_day_availability() {
 function musement_month_availability() {
     check_ajax_referer('musement_ajax', 'nonce');
 
-    $uuid = sanitize_text_field($_POST['uuid'] ?? '');
+    $uuid  = sanitize_text_field($_POST['uuid']  ?? '');
     $month = sanitize_text_field($_POST['month'] ?? '');
 
     if (!$uuid || !$month) {
@@ -178,14 +172,21 @@ function musement_month_availability() {
         rawurlencode($uuid)
     );
 
+    // Include auth token so authenticated endpoints return correct data.
+    $token   = musement_get_access_token();
+    $headers = [
+        'Accept-Language'       => 'es-ES',
+        'X-Musement-Application'=> MUSEMENT_APPLICATION,
+        'X-Musement-Currency'   => 'EUR',
+        'X-Musement-Market'     => 'es',
+        'X-Musement-Version'    => '3.4.0',
+    ];
+    if ($token) {
+        $headers['Authorization'] = 'Bearer ' . $token;
+    }
+
     $res = wp_remote_get($url, [
-        'headers' => [
-            'Accept-Language' => 'es-ES',
-            'X-Musement-Application' => MUSEMENT_APPLICATION,
-            'X-Musement-Currency' => 'EUR',
-            'X-Musement-Market' => 'es',
-            'X-Musement-Version' => '3.4.0',
-        ]
+        'headers' => $headers,
     ]);
 
     if (is_wp_error($res)) {
@@ -193,7 +194,7 @@ function musement_month_availability() {
     }
 
     $data = json_decode(wp_remote_retrieve_body($res), true);
-    $map = [];
+    $map  = [];
 
     if (is_array($data)) {
         foreach ($data as $day) {
@@ -293,57 +294,51 @@ function musement_availability() {
 function musement_activities() {
     check_ajax_referer('musement_ajax', 'nonce');
 
-    // Obtener parámetros
     $city_id = isset($_POST['city_id']) ? (int) sanitize_text_field(wp_unslash($_POST['city_id'])) : 0;
-    $lat = isset($_POST['lat']) ? (float) sanitize_text_field(wp_unslash($_POST['lat'])) : 37.1773;
-    $lng = isset($_POST['lng']) ? (float) sanitize_text_field(wp_unslash($_POST['lng'])) : -3.5986;
-    $limit = isset($_POST['limit']) ? max(1, min(12, (int) sanitize_text_field(wp_unslash($_POST['limit'])))) : 12;
-    
-    // 🔥 USAR MÁRGENES en lugar de precios fijos
+    $lat     = isset($_POST['lat'])     ? (float) sanitize_text_field(wp_unslash($_POST['lat']))     : 37.1773;
+    $lng     = isset($_POST['lng'])     ? (float) sanitize_text_field(wp_unslash($_POST['lng']))     : -3.5986;
+    $limit   = isset($_POST['limit'])   ? max(1, min(12, (int) sanitize_text_field(wp_unslash($_POST['limit'])))) : 12;
+
     $margins = get_option('musement_product_margins', []);
-    
-    // 🔥 ACTIVIDAD DE PRUEBA - Siempre disponible (con margen por defecto 0)
+
+    // Hardcoded test activity is only shown when WP_DEBUG is active.
     $test_activities = [];
-    $test_uuid = '4e451a8a-2ee5-493f-aa12-a39f13d7253e';
-    $test_margin = isset($margins[$test_uuid]) ? (float) $margins[$test_uuid] : 0;
-    $test_original_price = 40; // Precio original de la actividad de prueba
-    $test_final_price = $test_original_price * (1 + ($test_margin / 100));
-    
-    // Mostrar actividad de prueba aunque tenga margen 0 (para pruebas)
-    $test_activities[] = [
-        'uuid' => $test_uuid,
-        'title' => '🧪 TEST: Tour con confirmación instantánea',
-        'description' => 'Actividad de prueba para verificar el flujo completo de reserva. Tiene disponibilidad garantizada.',
-        'image' => 'https://images.musement.com/cover/0002/39/milan-vittorio-emanuele-ii-gallery-italy-jpg_header-138313.jpeg',
-        'price' => [
-            'value' => $test_final_price,
-            'currency' => 'EUR',
-            'formatted' => number_format($test_final_price, 2) . ' €'
-        ]
-    ];
-    
-    // Obtener actividades según el método disponible
+    if (defined('WP_DEBUG') && WP_DEBUG) {
+        $test_uuid         = '4e451a8a-2ee5-493f-aa12-a39f13d7253e';
+        $test_margin       = isset($margins[$test_uuid]) ? (float) $margins[$test_uuid] : 0;
+        $test_original     = 40;
+        $test_final        = $test_original * (1 + ($test_margin / 100));
+        $test_activities[] = [
+            'uuid'        => $test_uuid,
+            'title'       => '[TEST] Tour con confirmación instantánea',
+            'description' => 'Actividad de prueba para verificar el flujo completo de reserva.',
+            'image'       => 'https://images.musement.com/cover/0002/39/milan-vittorio-emanuele-ii-gallery-italy-jpg_header-138313.jpeg',
+            'price'       => [
+                'value'     => $test_final,
+                'currency'  => 'EUR',
+                'formatted' => number_format($test_final, 2) . ' €',
+            ],
+        ];
+    }
+
     $activities = [];
-    
     if ($city_id) {
         $activities = musement_get_activities_by_city($city_id, $limit);
     } else {
         $activities = musement_get_activities($lat, $lng, $limit);
     }
-    
-    // Procesar actividades de la ciudad con MÁRGENES
+
     $city_activities = array_map(function ($activity) use ($margins) {
-        $uuid = $activity['uuid'] ?? '';
+        $uuid   = $activity['uuid'] ?? '';
         $margin = isset($margins[$uuid]) ? (float) $margins[$uuid] : 0;
-        
-        // Solo mostrar actividades con margen > 0
+
         if ($margin <= 0) {
             return null;
         }
-        
+
         $original_price = $activity['retail_price']['value'] ?? 0;
-        $final_price = $original_price * (1 + ($margin / 100));
-        
+        $final_price    = $original_price * (1 + ($margin / 100));
+
         $cover_image = '';
         if (!empty($activity['cover_image_url'])) {
             $cover_image = $activity['cover_image_url'];
@@ -352,30 +347,27 @@ function musement_activities() {
         } elseif (!empty($activity['images'][0]['url'])) {
             $cover_image = $activity['images'][0]['url'];
         }
-        
+
         return [
-            'uuid'  => sanitize_text_field($uuid),
-            'title' => sanitize_text_field($activity['title'] ?? $activity['name'] ?? __('Tour sin titulo', 'musement-integration')),
+            'uuid'        => sanitize_text_field($uuid),
+            'title'       => sanitize_text_field($activity['title'] ?? $activity['name'] ?? __('Tour sin titulo', 'musement-integration')),
             'description' => wp_strip_all_tags($activity['description'] ?? $activity['about'] ?? ''),
-            'image' => esc_url_raw($cover_image),
-            'price' => [
-                'value' => $final_price,
-                'currency' => 'EUR',
-                'formatted' => number_format($final_price, 2) . ' €'
+            'image'       => esc_url_raw($cover_image),
+            'price'       => [
+                'value'     => $final_price,
+                'currency'  => 'EUR',
+                'formatted' => number_format($final_price, 2) . ' €',
             ],
         ];
     }, $activities);
-    
-    // Filtrar nulos
+
     $city_activities = array_filter($city_activities);
-    
-    // COMBINAR: Actividad de prueba + actividades de la ciudad con margen
+
     $items = array_merge($test_activities, array_values($city_activities));
-    
+
     wp_send_json_success([
         'activities' => $items,
-        'test_mode' => true,
-        'city_id' => $city_id
+        'city_id'    => $city_id,
     ]);
 }
 

@@ -1,0 +1,431 @@
+/* Musement Admin Settings Premium Stylesheet */
+
+.musement-admin-wrap {
+    max-width: 1200px;
+    margin: 20px auto 40px auto;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    color: #1e293b;
+}
+
+/* Header section */
+.musement-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 25px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.musement-header__brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.musement-header__brand h1 {
+    font-size: 24px;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0;
+    padding: 0;
+}
+
+.musement-header__brand .dashicons {
+    font-size: 28px;
+    width: 28px;
+    height: 28px;
+    color: #3b82f6;
+}
+
+.musement-version {
+    font-size: 13px;
+    background: #e2e8f0;
+    color: #475569;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-weight: 600;
+}
+
+/* Tabs Navigation */
+.musement-tabs-nav {
+    display: flex;
+    gap: 8px;
+    background: #f1f5f9;
+    padding: 6px;
+    border-radius: 12px;
+    margin-bottom: 25px;
+    border: 1px solid #e2e8f0;
+}
+
+.musement-tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #64748b;
+    cursor: pointer;
+    border-radius: 8px;
+    transition: all 0.2s ease-in-out;
+}
+
+.musement-tab-btn:hover {
+    color: #3b82f6;
+    background: rgba(59, 130, 246, 0.05);
+}
+
+.musement-tab-btn.is-active {
+    color: #3b82f6;
+    background: #ffffff;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+}
+
+.musement-tab-btn .dashicons {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+}
+
+/* Tabs Content & Panels */
+.musement-tabs-content {
+    margin-bottom: 30px;
+}
+
+.musement-tab-pane {
+    display: none;
+    animation: fadeIn 0.25s ease-in-out;
+}
+
+.musement-tab-pane.is-active {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Cards layout */
+.musement-card {
+    background: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+    margin-bottom: 25px;
+    overflow: hidden;
+}
+
+.musement-card__header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #f1f5f9;
+    background: #fafafa;
+}
+
+.musement-card__header h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #1e293b;
+    margin: 0 0 6px 0;
+}
+
+.musement-card__header h3 .dashicons {
+    color: #475569;
+}
+
+.musement-card__header p {
+    font-size: 13px;
+    color: #64748b;
+    margin: 0;
+}
+
+.musement-card__body {
+    padding: 24px;
+}
+
+/* Grid & Form fields */
+.musement-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 24px;
+}
+
+.musement-field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.musement-field-group label {
+    font-size: 13px;
+    font-weight: 700;
+    color: #334155;
+}
+
+.musement-field-group input[type="text"],
+.musement-field-group input[type="url"],
+.musement-field-group input[type="password"],
+.musement-field-group select {
+    padding: 10px 14px;
+    font-size: 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #1e293b;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);
+    transition: all 0.15s ease-in-out;
+    width: 100%;
+    max-width: 100%;
+}
+
+.musement-field-group input:focus,
+.musement-field-group select:focus {
+    border-color: #3b82f6;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.musement-field-help {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-top: 2px;
+}
+
+/* Stripe Specific Card style */
+.musement-card--stripe {
+    border-left: 4px solid #6366f1;
+}
+
+.musement-card--stripe .musement-card__header h3 .dashicons {
+    color: #6366f1;
+}
+
+/* City selection dashboard */
+.musement-city-dashboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+    align-items: start;
+}
+
+@media (max-width: 768px) {
+    .musement-city-dashboard {
+        grid-template-columns: 1fr;
+    }
+}
+
+.musement-city-selector-section {
+    background: #f8fafc;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px dashed #cbd5e1;
+}
+
+.musement-city-selector-section select {
+    width: 100%;
+    margin-bottom: 12px;
+}
+
+.musement-city-selector-section .button {
+    display: inline-block;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #475569 !important;
+    font-weight: 600 !important;
+    padding: 6px 12px !important;
+    border-radius: 6px !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+    transition: all 0.15s ease-in-out !important;
+    text-decoration: none !important;
+}
+
+.musement-city-selector-section .button:hover {
+    background: #f1f5f9 !important;
+    border-color: #94a3b8 !important;
+    color: #1e293b !important;
+}
+
+.musement-city-info-section {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+}
+
+.musement-city-info-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+}
+
+.musement-city-info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f1f5f9;
+    padding: 12px 18px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+.musement-info-label {
+    font-size: 13px;
+    color: #64748b;
+    font-weight: 500;
+}
+
+.musement-info-val {
+    font-size: 14px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+/* Tours Catalogo Section */
+.musement-card__header--tours {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.musement-search-wrap {
+    position: relative;
+    width: 320px;
+    max-width: 100%;
+}
+
+.musement-search-wrap .dashicons {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94a3b8;
+    pointer-events: none;
+}
+
+#musement-tour-search {
+    width: 100%;
+    padding: 8px 12px 8px 38px !important;
+    font-size: 14px !important;
+    border-radius: 8px !important;
+    border: 1px solid #cbd5e1 !important;
+    background: #ffffff !important;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.02) !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+#musement-tour-search:focus {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15) !important;
+    outline: none !important;
+}
+
+/* Products Table */
+.musement-products-table-wrapper {
+    padding: 0 !important;
+    overflow-x: auto;
+}
+
+.musement-tours-table {
+    border: none !important;
+    box-shadow: none !important;
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.musement-tours-table th {
+    background: #f8fafc;
+    color: #475569 !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    border-bottom: 2px solid #e2e8f0 !important;
+    padding: 14px 24px !important;
+}
+
+.musement-tours-table td {
+    padding: 18px 24px !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    vertical-align: middle !important;
+}
+
+.musement-tours-table tr:last-child td {
+    border-bottom: none !important;
+}
+
+.musement-tour-row strong {
+    font-size: 14px;
+    color: #0f172a;
+}
+
+.musement-tour-row small {
+    color: #94a3b8;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+/* Inputs within table */
+.musement-tours-table input.margin-input {
+    padding: 6px 10px !important;
+    font-size: 14px !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 6px !important;
+    text-align: right !important;
+    width: 70px !important;
+    display: inline-block !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+.musement-tours-table input.margin-input:focus {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15) !important;
+    outline: none !important;
+}
+
+.musement-final-price {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+/* Submit bar */
+.musement-footer-actions {
+    background: #ffffff;
+    border-top: 1px solid #e2e8f0;
+    padding: 20px 24px;
+    display: flex;
+    justify-content: flex-end;
+    border-radius: 0 0 12px 12px;
+    margin-top: -5px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+
+.musement-btn-submit {
+    background: #3b82f6 !important;
+    border-color: #2563eb !important;
+    font-weight: 600 !important;
+    padding: 8px 20px !important;
+    border-radius: 8px !important;
+    font-size: 14px !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+.musement-btn-submit:hover {
+    background: #2563eb !important;
+    border-color: #1d4ed8 !important;
+}
+
+/* Notices */
+.musement-card__body .notice {
+    margin: 0 0 20px 0 !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+}

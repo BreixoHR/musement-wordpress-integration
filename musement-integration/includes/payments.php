@@ -108,19 +108,21 @@ function musement_payment_complete_order(int $order_id, string $payment_referenc
 function musement_payment_sync_paid_order(array $order)
 {
     $order_id = (int) ($order['id'] ?? 0);
-    $stored = json_decode($order['integration_errors_json'] ?? '[]', true) ?: [];
+    $stored   = json_decode($order['integration_errors_json'] ?? '[]', true) ?: [];
+    $errors   = []; // accumulates errors from all integration steps
+
     $cart_uuid = $stored['musement_cart_uuid'] ?? musement_remote_cart_get_id();
     if ($cart_uuid) {
         $musement_order_res = musement_remote_create_order($cart_uuid, 'NONE');
         if (is_wp_error($musement_order_res)) {
             $errors['musement_order'] = [
                 'message' => $musement_order_res->get_error_message(),
-                'data' => $musement_order_res->get_error_data(),
+                'data'    => $musement_order_res->get_error_data(),
             ];
         } else {
             musement_orders_update($order_id, [
-                'musement_response_json' => $musement_order_res,
-                'musement_booking_reference' => $musement_order_res['uuid'] ?? $musement_order_res['identifier'] ?? '',
+                'musement_response_json'      => $musement_order_res,
+                'musement_booking_reference'  => $musement_order_res['uuid'] ?? $musement_order_res['identifier'] ?? '',
             ]);
         }
 
@@ -131,7 +133,7 @@ function musement_payment_sync_paid_order(array $order)
                 if (is_wp_error($mark)) {
                     $errors['musement_mark_paid'] = [
                         'message' => $mark->get_error_message(),
-                        'data' => $mark->get_error_data(),
+                        'data'    => $mark->get_error_data(),
                     ];
                     musement_orders_update($order_id, ['integration_errors_json' => $errors]);
                 } else {
@@ -142,6 +144,7 @@ function musement_payment_sync_paid_order(array $order)
             }
         }
     }
+
     if (!$order_id) {
         return new WP_Error(
             'musement_order_missing_id',
@@ -153,7 +156,7 @@ function musement_payment_sync_paid_order(array $order)
         'status' => 'sent_to_integrations',
     ]);
 
-    $errors = [];
+    // Continue accumulating errors for Salesforce and Musement/Sales integrations.
     $salesforce_response = musement_salesforce_notify_order($order);
 
     if (is_wp_error($salesforce_response)) {

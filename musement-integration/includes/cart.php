@@ -33,28 +33,36 @@ function musement_create_remote_cart(): ?array
 {
     $token = musement_get_access_token();
 
+    // Use admin-configurable operator credentials for the Musement cart.
+    // Set these in: WP Admin → Musement → Configuración de ciudad, or override in wp-config.php.
+    $operator_email    = defined('MUSEMENT_OPERATOR_EMAIL')    ? MUSEMENT_OPERATOR_EMAIL    : get_option('musement_operator_email',    get_bloginfo('admin_email'));
+    $operator_firstname= defined('MUSEMENT_OPERATOR_FIRSTNAME') ? MUSEMENT_OPERATOR_FIRSTNAME : get_option('musement_operator_firstname', get_bloginfo('name'));
+    $operator_lastname = defined('MUSEMENT_OPERATOR_LASTNAME')  ? MUSEMENT_OPERATOR_LASTNAME  : get_option('musement_operator_lastname',  'Operator');
+    $operator_mobile   = defined('MUSEMENT_OPERATOR_MOBILE')    ? MUSEMENT_OPERATOR_MOBILE    : get_option('musement_operator_mobile',   '');
+    $operator_country  = defined('MUSEMENT_OPERATOR_COUNTRY_ID')? (int) MUSEMENT_OPERATOR_COUNTRY_ID : (int) get_option('musement_operator_country_id', 1);
+
+    $customer_body = [
+        'email'     => sanitize_email($operator_email),
+        'firstname' => sanitize_text_field($operator_firstname),
+        'lastname'  => sanitize_text_field($operator_lastname),
+        'country'   => ['id' => $operator_country],
+    ];
+    if (!empty($operator_mobile)) {
+        $customer_body['mobile'] = sanitize_text_field($operator_mobile);
+    }
+
     $res = wp_remote_post('https://sandbox.musement.com/api/v3/carts', [
         'timeout' => 15,
         'headers' => [
-            'Authorization' => 'Bearer ' . $token,
-            'Accept' => 'application/json',
-            'Content-Type' => 'application/json',
+            'Authorization'          => 'Bearer ' . $token,
+            'Accept'                 => 'application/json',
+            'Content-Type'           => 'application/json',
             'X-Musement-Application' => MUSEMENT_APPLICATION,
-            'X-Musement-Currency' => 'EUR',
-            'X-Musement-Market' => 'es',
-            'X-Musement-Version' => '3.4.0',
+            'X-Musement-Currency'    => 'EUR',
+            'X-Musement-Market'      => 'es',
+            'X-Musement-Version'     => '3.4.0',
         ],
-        'body' => wp_json_encode([
-            'customer' => [
-                'email' => 'ops@example.com',
-                'firstname' => 'MNPQ SL',
-                'lastname' => 'OPERADORES TURISTICOS',
-                'country' => [
-                    'id' => 1
-                ],
-                'mobile' => '+34958285053',
-            ]
-        ]),
+        'body' => wp_json_encode(['customer' => $customer_body]),
     ]);
 
     if (is_wp_error($res)) {
@@ -263,8 +271,9 @@ function musement_remote_cart_remove_item(string $remote_item_uuid): bool
 
     $status = wp_remote_retrieve_response_code($res);
 
-    if ($status !== 204) {
-        error_log('Remote remove failed: ' . wp_remote_retrieve_body($res));
+    // Accept 200 (OK) or 204 (No Content) — different API versions may return either.
+    if ($status !== 204 && $status !== 200) {
+        error_log('Remote remove failed (status ' . $status . '): ' . wp_remote_retrieve_body($res));
         return false;
     }
 

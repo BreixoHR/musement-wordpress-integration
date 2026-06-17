@@ -11,17 +11,37 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '0.13.306'); 
+define('MUSEMENT_INTEGRATION_VERSION', '0.13.306');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
-define('MUSEMENT_APPLICATION', '***');
-define('MUSEMENT_CLIENT_ID', '***');
-define('MUSEMENT_CLIENT_SECRET', '***');
-define('MUSEMENT_STRIPE_PUBLISHABLE_KEY', '***');
-define('MUSEMENT_STRIPE_SECRET_KEY', '***');
-define('MUSEMENT_STRIPE_WEBHOOK_SECRET', '***');
-define('MUSEMENT_VENTRATA_ENDPOINT', 'https://tu-endpoint-salesforce.com/webhook');
-define('MUSEMENT_VENTRATA_API_KEY', '***');
+
+/**
+ * CREDENTIALS — Do NOT hardcode real values here.
+ * Define these constants in wp-config.php instead, for example:
+ *
+ *   define('MUSEMENT_APPLICATION',          '***');
+ *   define('MUSEMENT_CLIENT_ID',            '***');
+ *   define('MUSEMENT_CLIENT_SECRET',        '***');
+ *   define('MUSEMENT_STRIPE_PUBLISHABLE_KEY', '***');
+ *   define('MUSEMENT_STRIPE_SECRET_KEY',    '***');
+ *   define('MUSEMENT_STRIPE_WEBHOOK_SECRET','***');
+ *   define('MUSEMENT_VENTRATA_ENDPOINT',    'https://...');
+ *   define('MUSEMENT_VENTRATA_API_KEY',     '***');
+ *
+ * If not defined in wp-config.php, the plugin falls back to the values
+ * stored in the WordPress options table (configurable via the admin panel).
+ */
+if (!defined('MUSEMENT_APPLICATION')) {
+    define('MUSEMENT_APPLICATION', get_option('musement_application', ''));
+}
+if (!defined('MUSEMENT_CLIENT_ID')) {
+    define('MUSEMENT_CLIENT_ID', get_option('musement_api_key', ''));
+}
+if (!defined('MUSEMENT_CLIENT_SECRET')) {
+    define('MUSEMENT_CLIENT_SECRET', get_option('musement_api_secret', ''));
+}
+// Stripe keys fall back to DB options — see payment-stripe.php
+// Ventrata keys fall back to DB options — see octo.php
 
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/api.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/ajax.php';
@@ -51,14 +71,23 @@ function musement_integration_shortcode($atts): string
         'city_id' => $city_id,
         'limit' => '12',
         'title' => $city_name ? sprintf(__('Tours en %s', 'musement-integration'), $city_name) : __('Tours disponibles', 'musement-integration'),
+        'image_url' => '',
     ], $atts, 'musement_tours');
 
-    $city_id = (int) $atts['city_id'];
-    $limit = max(1, min(12, (int) $atts['limit']));
-    $title = sanitize_text_field($atts['title']);
-
+    // Obtener atributos
+    $city_id = $atts['city_id'] ?? '';
+    $limit = $atts['limit'] ?? 12;
+    $title = $atts['title'] ?? '';
+    $image_url = $atts['image_url'] ?? '';
+    
+    // Generar contenido del widget
     ob_start();
     ?>
+    <?php if (!empty($image_url)) : ?>
+        <div class="musement-widget-image" style="text-align:center;margin-bottom:15px;">
+            <img src="<?php echo esc_url($image_url); ?>" alt="<?php echo esc_attr($title); ?>" style="max-width:100%;height:auto;" />
+        </div>
+    <?php endif; ?>
     <section class="musement-widget" 
             data-city-id="<?php echo esc_attr($city_id); ?>" 
             data-limit="<?php echo esc_attr($limit); ?>">
@@ -69,7 +98,6 @@ function musement_integration_shortcode($atts): string
         <div class="musement-tours" aria-live="polite"></div>
     </section>
     <?php
-
     return ob_get_clean();
 }
 add_shortcode('musement_tours', 'musement_integration_shortcode');
@@ -176,7 +204,13 @@ function musement_checkout_page_install(): void
         update_option('musement_checkout_page_id', (int) $page_id);
     }
 }
-add_action('plugins_loaded', 'musement_checkout_page_install');
+// Only install the checkout page once per version — not on every page load.
+add_action('plugins_loaded', function () {
+    if (get_option('musement_checkout_page_installed_version') !== MUSEMENT_INTEGRATION_VERSION) {
+        musement_checkout_page_install();
+        update_option('musement_checkout_page_installed_version', MUSEMENT_INTEGRATION_VERSION);
+    }
+});
 
 function musement_checkout_page_maybe_update_title(): void
 {
@@ -222,26 +256,22 @@ function musement_create_order() {
         wp_send_json_error(['message' => $order->get_error_message()]);
     }
 
-    // 2. PASO NUEVO: ¡Ya tenemos el pago! Avisamos a Musement.
-    $order_uuid = $order['uuid'] ?? '';
-    $vouchers = [];
+    // 2. Confirmar la orden en Musement (no-payment flow).
+    $order_uuid   = $order['uuid'] ?? '';
+    $vouchers     = [];
     $voucher_urls = [];
+    $octo_payload = null; // initialise so it is always defined
 
     if ($order_uuid) {
-        // Esta es la función que debe llamar al endpoint de "no-payment flow"
         $payment_confirmation = musement_remote_mark_order_paid($order_uuid);
 
-        
-
         if (is_wp_error($payment_confirmation)) {
-            // Es crucial loguear este error para investigarlo.
             error_log('[MUSEMENT] Error al confirmar pago de orden ' . $order_uuid . ': ' . $payment_confirmation->get_error_message());
-            // Podrías devolver un error aquí, o manejarlo internamente.
         } else {
-            // ¡Perfecto! La orden ahora está confirmada.
+            // Orden confirmada — recuperar datos actualizados (incluye vouchers).
             $updated_order = musement_remote_get_order($order_uuid);
 
-            if(is_wp_error($updated_order)) {
+            if (is_wp_error($updated_order)) {
                 error_log('[MUSEMENT] Error al obtener orden actualizada ' . $order_uuid . ': ' . $updated_order->get_error_message());
             } else {
                 $vouchers = musement_extract_vouchers_from_order($updated_order);
@@ -252,16 +282,15 @@ function musement_create_order() {
                     }
                 }
 
-                $order = $updated_order; // Actualizamos la orden con los datos confirmados.
+                $order = $updated_order;
             }
 
             error_log('[MUSEMENT] Pago confirmado para orden ' . $order_uuid);
-            // Actualiza el estado en la respuesta para que el frontend sepa que fue exitoso.
-            $order['status'] = 'CONFIRMED'; 
+            $order['status'] = 'CONFIRMED';
 
-            //$octo_payload = musement_build_octo_payload($order, $customer_data);
             $octo_payload = musement_build_octo_payload($order, $customer_data, $voucher_urls);
-            $_SESSION['musement_octo_payload'] = $octo_payload; // Guardamos el payload en sesión para usarlo después en el webhook de Ventrata.
+            // Note: OCTO payload is returned in the response for the frontend to use.
+            // Do NOT store customer PII in $_SESSION.
         }
     }
 
@@ -397,3 +426,61 @@ add_action('wp_enqueue_scripts', function () {
         'price' => get_option('musement_product_price', 0),
     ]);
 });
+
+/**
+ * Register Gutenberg Block for Musement Tours
+ */
+add_action('init', function () {
+    if (!function_exists('register_block_type')) {
+        return;
+    }
+
+    // Register editor script
+    wp_register_script(
+        'musement-tours-block-editor',
+        MUSEMENT_INTEGRATION_URL . 'blocks/tours-block.js',
+        ['wp-blocks', 'wp-element', 'wp-editor', 'wp-components', 'wp-i18n'],
+        MUSEMENT_INTEGRATION_VERSION
+    );
+
+    // Localize data for editor (cities list, default settings)
+    wp_localize_script('musement-tours-block-editor', 'MusementBlockData', [
+        'cities' => function_exists('musement_get_cities') ? musement_get_cities() : [],
+        'defaultCityId' => get_option('musement_city_id', ''),
+        'defaultCityName' => get_option('musement_city_name', ''),
+    ]);
+
+    // Register block type
+    register_block_type('musement-integration/tours', [
+        'editor_script' => 'musement-tours-block-editor',
+        'render_callback' => 'musement_integration_block_render_callback',
+        'attributes' => [
+            'image_url' => [
+                'type' => 'string',
+                'default' => ''
+            ],
+            'limit' => [
+                'type' => 'number',
+                'default' => 12,
+            ],
+            'title' => [
+                'type' => 'string',
+                'default' => '',
+            ],
+        ],
+    ]);
+});
+
+/**
+ * Render callback for Musement Tours block
+ */
+function musement_integration_block_render_callback($attributes): string {
+    $atts = [
+        'city_id' => !empty($attributes['city_id']) ? $attributes['city_id'] : get_option('musement_city_id', ''),
+        'limit'   => !empty($attributes['limit']) ? $attributes['limit'] : 12,
+        'title'   => !empty($attributes['title']) ? $attributes['title'] : '',
+        'image_url' => !empty($attributes['image_url']) ? $attributes['image_url'] : '',
+    ];
+    return musement_integration_shortcode($atts);
+}
+

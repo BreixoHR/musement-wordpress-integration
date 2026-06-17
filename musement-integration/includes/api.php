@@ -9,14 +9,26 @@ if (!defined('ABSPATH')) {
 
 function musement_integration_api_request(string $endpoint, array $query_args = [])
 {
-    $base_url = 'https://api.musement.com/api/v3/';
+    // Use the sandbox base URL, consistent with all other API helpers in this plugin.
+    // To switch to production, define MUSEMENT_API_BASE_URL in wp-config.php:
+    //   define('MUSEMENT_API_BASE_URL', 'https://api.musement.com/api/v3/');
+    $base_url = defined('MUSEMENT_API_BASE_URL')
+        ? MUSEMENT_API_BASE_URL
+        : 'https://sandbox.musement.com/api/v3/';
+
     $url = add_query_arg($query_args, trailingslashit($base_url) . ltrim($endpoint, '/'));
+
+    $token    = musement_get_access_token();
+    $headers  = ['Accept' => 'application/json'];
+    if ($token) {
+        $headers['Authorization']        = 'Bearer ' . $token;
+        $headers['X-Musement-Application'] = MUSEMENT_APPLICATION;
+        $headers['X-Musement-Version']   = '3.4.0';
+    }
 
     $response = wp_remote_get($url, [
         'timeout' => 15,
-        'headers' => [
-            'Accept' => 'application/json',
-        ],
+        'headers' => $headers,
     ]);
 
     if (is_wp_error($response)) {
@@ -24,8 +36,8 @@ function musement_integration_api_request(string $endpoint, array $query_args = 
     }
 
     $status_code = wp_remote_retrieve_response_code($response);
-    $body = wp_remote_retrieve_body($response);
-    $data = json_decode($body, true);
+    $body        = wp_remote_retrieve_body($response);
+    $data        = json_decode($body, true);
 
     if ($status_code < 200 || $status_code >= 300) {
         return new WP_Error(
@@ -33,7 +45,7 @@ function musement_integration_api_request(string $endpoint, array $query_args = 
             __('Musement API request failed.', 'musement-integration'),
             [
                 'status' => $status_code,
-                'body' => $data,
+                'body'   => $data,
             ]
         );
     }
@@ -103,13 +115,16 @@ function musement_remote_download_activity_voucher(string $order_uuid, string $a
     $body = wp_remote_retrieve_body($res);
 
     $uploads = wp_upload_dir();
-    $dir = trailingslashit($uploads['basedir']) . 'musement_vouchers';
+    $dir     = trailingslashit($uploads['basedir']) . 'musement_vouchers';
     if (!wp_mkdir_p($dir)) {
         return new WP_Error('musement_save_dir_failed', 'Could not create directory: ' . $dir);
     }
 
+    // Block direct HTTP access to this directory.
+    musement_protect_upload_dir($dir);
+
     $filename = 'voucher-' . sanitize_file_name($order_uuid) . '-' . sanitize_file_name($activity_uuid) . '.pdf';
-    $path = $dir . '/' . $filename;
+    $path     = $dir . '/' . $filename;
 
     if (false === file_put_contents($path, $body)) {
         return new WP_Error('musement_save_failed', 'Could not write PDF to disk.');
@@ -119,6 +134,22 @@ function musement_remote_download_activity_voucher(string $order_uuid, string $a
         'path' => $path,
         'url'  => trailingslashit($uploads['baseurl']) . 'musement_vouchers/' . $filename,
     ];
+}
+
+/**
+ * Write an .htaccess file that blocks direct HTTP access to a directory.
+ * Safe to call repeatedly — only writes if the file does not already exist.
+ *
+ * @param string $dir Absolute path to the directory.
+ */
+function musement_protect_upload_dir(string $dir): void {
+    $htaccess = $dir . '/.htaccess';
+    if (!file_exists($htaccess)) {
+        $rules = "# Block direct access to files in this directory.\n"
+               . "Order Deny,Allow\n"
+               . "Deny from all\n";
+        @file_put_contents($htaccess, $rules);
+    }
 }
 
 function musement_remote_mark_order_paid(string $order_uuid) {
@@ -156,30 +187,38 @@ function musement_remote_mark_order_paid(string $order_uuid) {
     return is_array($data) ? $data : [];
 }
 
+/**
+ * Obtiene los detalles completos de una actividad por latitud/longitud.
+ */
 function musement_get_activities($lat = 37.1773, $lng = -3.5986, $limit = 6): array
 {
-    $lat = (float) $lat;
-    $lng = (float) $lng;
+    $lat   = (float) $lat;
+    $lng   = (float) $lng;
     $limit = max(1, min(12, (int) $limit));
 
-    $url = add_query_arg([
-            'lat' => $lat,
-            'lng' => $lng,
-            'limit' => $limit,
-    ], 'https://sandbox.musement.com/api/v3/activities?available_from=2026-05-07&available_to=2026-05-08&city_in=2');
+    // Use a rolling 2-day window from today so the filter is always current.
+    $from = gmdate('Y-m-d');
+    $to   = gmdate('Y-m-d', strtotime('+1 day'));
 
+    $url = add_query_arg([
+        'lat'            => $lat,
+        'lng'            => $lng,
+        'limit'          => $limit,
+        'available_from' => $from,
+        'available_to'   => $to,
+    ], 'https://sandbox.musement.com/api/v3/activities');
 
     $token = musement_get_access_token();
-    
+
     $res = wp_remote_get($url, [
         'timeout' => 15,
         'headers' => [
-            'Accept-Language' => 'es-ES',
+            'Accept-Language'        => 'es-ES',
             'X-Musement-Application' => MUSEMENT_APPLICATION,
-            'X-Musement-Currency' => 'EUR',
-            'X-Musement-Market' => 'es',
-            'X-Musement-Version' => '3.4.0',
-            'Authorization' => 'Bearer ' . $token,
+            'X-Musement-Currency'    => 'EUR',
+            'X-Musement-Market'      => 'es',
+            'X-Musement-Version'     => '3.4.0',
+            'Authorization'          => 'Bearer ' . $token,
         ],
     ]);
 
@@ -425,15 +464,18 @@ function musement_remote_download_ticket_pdf($order_uuid, $activity_uuid, $ticke
         );
     }
 
-    $body = wp_remote_retrieve_body($res);
+    $body        = wp_remote_retrieve_body($res);
     $uploads_dir = wp_upload_dir();
-    $ticket_dir = $uploads_dir['basedir'] . '/musement-tickets/';
+    $ticket_dir  = $uploads_dir['basedir'] . '/musement-tickets/';
 
     if (!file_exists($ticket_dir)) {
         wp_mkdir_p($ticket_dir);
     }
 
-    $filename = sprintf('ticket-%s-%s-%s.pdf', 
+    // Block direct HTTP access to this directory.
+    musement_protect_upload_dir(rtrim($ticket_dir, '/'));
+
+    $filename = sprintf('ticket-%s-%s-%s.pdf',
         sanitize_file_name($order_uuid),
         sanitize_file_name($activity_uuid),
         sanitize_file_name($ticket_id)
@@ -445,8 +487,8 @@ function musement_remote_download_ticket_pdf($order_uuid, $activity_uuid, $ticke
     }
 
     return [
-        'path' => $filepath,
-        'url' => str_replace($uploads_dir['basedir'], $uploads_dir['baseurl'], $filepath),
-        'filename' => $filename
+        'path'     => $filepath,
+        'url'      => str_replace($uploads_dir['basedir'], $uploads_dir['baseurl'], $filepath),
+        'filename' => $filename,
     ];
 }
