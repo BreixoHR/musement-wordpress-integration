@@ -19,25 +19,6 @@ add_action('admin_menu', function () {
     );
 });
 
-add_action('admin_enqueue_scripts', function ($hook) {
-    if ($hook !== 'toplevel_page_musement-settings') {
-        return;
-    }
-    wp_enqueue_style(
-        'musement-admin-settings',
-        MUSEMENT_INTEGRATION_URL . 'assets/admin-settings.css',
-        [],
-        MUSEMENT_INTEGRATION_VERSION
-    );
-    wp_enqueue_script(
-        'musement-admin-settings',
-        MUSEMENT_INTEGRATION_URL . 'assets/admin-settings.js',
-        ['jquery'],
-        MUSEMENT_INTEGRATION_VERSION,
-        true
-    );
-});
-
 add_action('admin_init', function() {
     // Sanitizar márgenes antes de guardar
     add_filter('sanitize_option_musement_product_margins', function($margins) {
@@ -65,7 +46,7 @@ add_action('admin_init', function () {
     register_setting('musement_settings_group', 'musement_application');
     register_setting('musement_settings_group', 'musement_salesforce_endpoint');
     register_setting('musement_settings_group', 'musement_salesforce_api_key');
-    register_setting('musement_settings_group', 'musement_product_prices');   // registered once
+    register_setting('musement_settings_group', 'musement_product_prices');
     register_setting('musement_settings_group', 'musement_payment_gateway');
     register_setting('musement_settings_group', 'musement_payment_create_endpoint');
     register_setting('musement_settings_group', 'musement_payment_api_key');
@@ -73,6 +54,7 @@ add_action('admin_init', function () {
     register_setting('musement_settings_group', 'musement_stripe_publishable_key');
     register_setting('musement_settings_group', 'musement_stripe_secret_key');
     register_setting('musement_settings_group', 'musement_stripe_webhook_secret');
+    register_setting('musement_settings_group', 'musement_product_prices');
     register_setting('musement_settings_group', 'musement_city_lat');
     register_setting('musement_settings_group', 'musement_city_lng');
     register_setting('musement_settings_group', 'musement_city_name');
@@ -207,203 +189,15 @@ add_action('admin_init', function () {
  */
 function musement_settings_page() {
     ?>
-    <div class="wrap musement-admin-wrap">
-        <div class="musement-header">
-            <div class="musement-header__brand">
-                <span class="dashicons dashicons-location-alt"></span>
-                <h1>Panel de Control Musement</h1>
-            </div>
-            <div class="musement-header__actions">
-                <span class="musement-version">v<?php echo esc_html(MUSEMENT_INTEGRATION_VERSION); ?></span>
-            </div>
-        </div>
+    <div class="wrap">
+        <h1>Musement Settings</h1>
 
-        <form method="post" action="options.php" class="musement-admin-form">
-            <?php settings_fields('musement_settings_group'); ?>
-            
-            <div class="musement-dashboard">
-                <!-- Navigation Tabs -->
-                <div class="musement-tabs-nav">
-                    <button type="button" class="musement-tab-btn is-active" data-tab="connectivity">
-                        <span class="dashicons dashicons-admin-links"></span> Conectividad API
-                    </button>
-                    <button type="button" class="musement-tab-btn" data-tab="payments">
-                        <span class="dashicons dashicons-cart"></span> Configuración de Pagos
-                    </button>
-                    <button type="button" class="musement-tab-btn" data-tab="city">
-                        <span class="dashicons dashicons-location"></span> Configuración de Ciudad
-                    </button>
-                    <button type="button" class="musement-tab-btn" data-tab="tours">
-                        <span class="dashicons dashicons-images-alt2"></span> Tours y Márgenes
-                    </button>
-                </div>
-
-                <!-- Tabs Content -->
-                <div class="musement-tabs-content">
-                    
-                    <!-- Tab Connectivity -->
-                    <div class="musement-tab-pane is-active" id="tab-connectivity">
-                        <div class="musement-card">
-                            <div class="musement-card__header">
-                                <h3><span class="dashicons dashicons-admin-network"></span> Credenciales de la API de Musement</h3>
-                                <p>Configura los datos de autenticación necesarios para conectarte al entorno sandbox de Musement.</p>
-                            </div>
-                            <div class="musement-card__body">
-                                <div class="musement-grid">
-                                    <div class="musement-field-group">
-                                        <label for="musement_application">Application ID</label>
-                                        <input type="text" id="musement_application" name="musement_application" value="<?php echo esc_attr(get_option('musement_application', '')); ?>" placeholder="Ej: demotours...">
-                                        <span class="musement-field-help">Identificador único de tu aplicación en el sandbox de Musement.</span>
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_api_key">API Key Musement (Client ID)</label>
-                                        <input type="text" id="musement_api_key" name="musement_api_key" value="<?php echo esc_attr(get_option('musement_api_key', '')); ?>">
-                                        <span class="musement-field-help">Client ID de la API de Musement.</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="musement-card">
-                            <div class="musement-card__header">
-                                <h3><span class="dashicons dashicons-cloud"></span> Conexión con Salesforce</h3>
-                                <p>Configuración del endpoint para la sincronización de órdenes a Salesforce (Ventrata).</p>
-                            </div>
-                            <div class="musement-card__body">
-                                <div class="musement-grid">
-                                    <div class="musement-field-group">
-                                        <label for="musement_salesforce_endpoint">Salesforce Endpoint</label>
-                                        <input type="url" id="musement_salesforce_endpoint" name="musement_salesforce_endpoint" value="<?php echo esc_attr(get_option('musement_salesforce_endpoint', '')); ?>" placeholder="https://...">
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_salesforce_api_key">Salesforce API Key</label>
-                                        <input type="password" id="musement_salesforce_api_key" name="musement_salesforce_api_key" value="<?php echo esc_attr(get_option('musement_salesforce_api_key', '')); ?>">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tab Payments -->
-                    <div class="musement-tab-pane" id="tab-payments">
-                        <div class="musement-card">
-                            <div class="musement-card__header">
-                                <h3><span class="dashicons dashicons-admin-generic"></span> Pasarela de Pago General</h3>
-                                <p>Configura el método de pago por defecto y credenciales asociadas.</p>
-                            </div>
-                            <div class="musement-card__body">
-                                <div class="musement-grid">
-                                    <div class="musement-field-group">
-                                        <label for="musement_payment_gateway">Pasarela Seleccionada</label>
-                                        <?php $gateway = get_option('musement_payment_gateway', 'hosted'); ?>
-                                        <select id="musement_payment_gateway" name="musement_payment_gateway">
-                                            <option value="hosted" <?php selected($gateway, 'hosted'); ?>>Hosted (Redirección)</option>
-                                            <option value="stripe" <?php selected($gateway, 'stripe'); ?>>Stripe (Integrado)</option>
-                                            <option value="redsys" <?php selected($gateway, 'redsys'); ?>>Redsys</option>
-                                        </select>
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_payment_create_endpoint">Endpoint de Creación de Pago</label>
-                                        <input type="text" id="musement_payment_create_endpoint" name="musement_payment_create_endpoint" value="<?php echo esc_attr(get_option('musement_payment_create_endpoint', '')); ?>">
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_payment_api_key">Payment API Key</label>
-                                        <input type="password" id="musement_payment_api_key" name="musement_payment_api_key" value="<?php echo esc_attr(get_option('musement_payment_api_key', '')); ?>">
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_payment_webhook_secret">Webhook Secret</label>
-                                        <input type="password" id="musement_payment_webhook_secret" name="musement_payment_webhook_secret" value="<?php echo esc_attr(get_option('musement_payment_webhook_secret', '')); ?>">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="musement-card musement-card--stripe">
-                            <div class="musement-card__header">
-                                <h3><span class="dashicons dashicons-shield"></span> Configuración de Stripe</h3>
-                                <p>Requerido si has seleccionado Stripe como pasarela de pago.</p>
-                            </div>
-                            <div class="musement-card__body">
-                                <div class="musement-grid">
-                                    <div class="musement-field-group">
-                                        <label for="musement_stripe_publishable_key">Stripe Publishable Key</label>
-                                        <input type="text" id="musement_stripe_publishable_key" name="musement_stripe_publishable_key" value="<?php echo esc_attr(get_option('musement_stripe_publishable_key', '')); ?>" placeholder="pk_test_...">
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_stripe_secret_key">Stripe Secret Key</label>
-                                        <input type="password" id="musement_stripe_secret_key" name="musement_stripe_secret_key" value="<?php echo esc_attr(get_option('musement_stripe_secret_key', '')); ?>" placeholder="sk_test_...">
-                                    </div>
-                                    <div class="musement-field-group">
-                                        <label for="musement_stripe_webhook_secret">Stripe Webhook Secret</label>
-                                        <input type="password" id="musement_stripe_webhook_secret" name="musement_stripe_webhook_secret" value="<?php echo esc_attr(get_option('musement_stripe_webhook_secret', '')); ?>" placeholder="whsec_...">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tab City -->
-                    <div class="musement-tab-pane" id="tab-city">
-                        <div class="musement-card">
-                            <div class="musement-card__header">
-                                <h3><span class="dashicons dashicons-location-alt"></span> Selección de Ciudad de Destino</h3>
-                                <p>Selecciona la ciudad de la cual deseas importar las actividades y tours de Musement.</p>
-                            </div>
-                            <div class="musement-card__body">
-                                <div class="musement-city-dashboard">
-                                    <div class="musement-city-selector-section">
-                                        <div class="musement-field-group">
-                                            <label>Ciudad</label>
-                                            <?php musement_field_city_selector(); ?>
-                                        </div>
-                                    </div>
-                                    
-                                    <div class="musement-city-info-section">
-                                        <div class="musement-city-info-grid">
-                                            <div class="musement-city-info-item">
-                                                <span class="musement-info-label">Ciudad seleccionada</span>
-                                                <span class="musement-info-val"><?php echo esc_html(get_option('musement_city_name', 'Ninguna')); ?></span>
-                                            </div>
-                                            <div class="musement-city-info-item">
-                                                <span class="musement-info-label">Latitud</span>
-                                                <span class="musement-info-val"><?php echo esc_html(get_option('musement_city_lat', '-')); ?></span>
-                                            </div>
-                                            <div class="musement-city-info-item">
-                                                <span class="musement-info-label">Longitud</span>
-                                                <span class="musement-info-val"><?php echo esc_html(get_option('musement_city_lng', '-')); ?></span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tab Tours -->
-                    <div class="musement-tab-pane" id="tab-tours">
-                        <div class="musement-card">
-                            <div class="musement-card__header musement-card__header--tours">
-                                <div>
-                                    <h3><span class="dashicons dashicons-tickets"></span> Catálogo de Actividades y Márgenes</h3>
-                                    <p>Configura el porcentaje de margen para cada actividad. Las actividades sin margen no se mostrarán en la web.</p>
-                                </div>
-                                <div class="musement-search-wrap">
-                                    <span class="dashicons dashicons-search"></span>
-                                    <input type="text" id="musement-tour-search" placeholder="Buscar tour por nombre...">
-                                </div>
-                            </div>
-                            <div class="musement-card__body musement-products-table-wrapper">
-                                <?php musement_products_field(); ?>
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
-            </div>
-            
-            <div class="musement-footer-actions">
-                <?php submit_button('Guardar Cambios', 'primary large musement-btn-submit', 'submit', false); ?>
-            </div>
+        <form method="post" action="options.php">
+            <?php
+            settings_fields('musement_settings_group');
+            do_settings_sections('musement-settings');
+            submit_button('Guardar configuración');
+            ?>
         </form>
     </div>
     <?php
@@ -477,7 +271,7 @@ function musement_field_stripe_webhook_secret() {
 
 function musement_products_field() {
     $products = get_option('musement_products_cache', []);
-    $margins = get_option('musement_product_margins', []);
+    $margins = get_option('musement_product_margins', []); // Cambiamos a margins
     
     if (empty($products)) {
         echo '<div class="notice notice-warning"><p>No hay productos disponibles. Selecciona una ciudad primero y guarda los cambios.</p></div>';
@@ -490,7 +284,7 @@ function musement_products_field() {
     echo '<p>💡 El precio final se calculará automáticamente como: <strong>Precio original + (Precio original × Margen / 100)</strong></p>';
     echo '</div>';
     
-    echo '<table class="widefat striped musement-tours-table">';
+    echo '<table class="widefat striped">';
     echo '<thead>';
     echo '<tr>';
     echo '<th width="40%">Actividad</th>';
@@ -502,44 +296,89 @@ function musement_products_field() {
     echo '<tbody>';
     
     foreach ($products as $activity_uuid => $activity) {
+        // Obtener precio original de la actividad (si está disponible)
         $original_price = 0;
         if (!empty($activity['products']) && is_array($activity['products'])) {
+            // Tomar el precio del primer producto como referencia
             $original_price = $activity['products'][0]['retail_price']['value'] ?? 0;
         }
         
         $current_margin = isset($margins[$activity_uuid]) ? $margins[$activity_uuid] : '';
         $final_price = ($original_price > 0 && $current_margin !== '') ? $original_price * (1 + ($current_margin / 100)) : 0;
         
-        echo '<tr class="musement-tour-row">';
+        echo '<tr>';
         echo '<td><strong>' . esc_html($activity['title'] ?? 'Actividad sin título') . '</strong><br>';
-        echo '<small>' . esc_html($activity_uuid) . '</small></td>';
+        echo '<small>' . esc_html($activity_uuid) . '</small>如果';
         echo '<td>';
         if ($original_price > 0) {
-            echo number_format($original_price, 2, ',', '.') . ' €';
+            echo number_format($original_price, 2) . ' €';
         } else {
             echo '<span style="color: #999;">No disponible</span>';
         }
         echo '</td>';
         echo '<td>';
-        echo '<input type="text" pattern="[0-9]+([,][0-9]+)?" class="margin-input musement-margin-input"';
+        echo '<input type="text" pattern="[0-9]+([,][0-9]+)?"';
         echo '       name="musement_product_margins[' . esc_attr($activity_uuid) . ']"';
         echo '       value="' . esc_attr($current_margin) . '"';
-        echo '       data-original-price="' . esc_attr($original_price) . '"';
-        echo '       style="width: 80px;" placeholder="0"> %';
-        echo '</td>';
+        echo '       style="width: 80px;" placeholder="0"';
+        echo '       oninput="this.value = this.value.replace(/\\./g, \',\').replace(/[^0-9,]/g, \'\')"';
+        echo '       onblur="if(this.value === \'\') this.value = \'0\'; if(this.value.endsWith(\',\')) this.value = this.value.slice(0, -1);"> %';
         echo '<td>';
         if ($final_price > 0) {
-            echo '<strong class="musement-final-price" style="color: #2e7d32;">' . number_format($final_price, 2, ',', '.') . ' €</strong>';
+            echo '<strong style="color: #2e7d32;">' . number_format($final_price, 2) . ' €</strong>';
         } else {
-            echo '<strong class="musement-final-price" style="color: #999;">-</strong>';
+            echo '<span style="color: #999;">-</span>';
         }
-        echo '</td>';
         echo '</tr>';
     }
     
     echo '</tbody>';
     echo '</table>';
     echo '<p class="description">El margen se aplica sobre el precio original de Musement. Si no introduces margen, la actividad no se mostrará en el frontend.</p>';
+
+    ?>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const marginInputs = document.querySelectorAll('.margin-input');
+            
+            marginInputs.forEach(function(input) {
+                // Formatear valor inicial (reemplazar punto por coma)
+                if (input.value && input.value.includes('.')) {
+                    input.value = input.value.replace(/\./g, ',');
+                }
+                
+                input.addEventListener('input', function(e) {
+                    // Solo permitir números, coma y backspace
+                    let value = this.value;
+                    
+                    // Reemplazar cualquier punto por coma
+                    value = value.replace(/\./g, ',');
+                    
+                    // Eliminar cualquier caracter que no sea número, coma o guión
+                    value = value.replace(/[^0-9,-]/g, '');
+                    
+                    // Asegurar que solo haya una coma
+                    const parts = value.split(',');
+                    if (parts.length > 2) {
+                        value = parts[0] + ',' + parts.slice(1).join('');
+                    }
+                    
+                    this.value = value;
+                });
+                
+                // Al perder el foco, validar
+                input.addEventListener('blur', function() {
+                    let value = this.value;
+                    if (value === '' || value === '-') {
+                        this.value = '';
+                    } else if (value.endsWith(',')) {
+                        this.value = value.slice(0, -1);
+                    }
+                });
+            });
+        });
+    </script>
+    <?php
 }
 
 function musement_get_cities() {
@@ -626,90 +465,123 @@ add_action('update_option_musement_city_id', function ($old, $new) {
  * @param int|string $city_id
  * @return bool
  */
-/**
- * Fetch activities for a given city and store a simplified cache used by the admin UI.
- *
- * OPTIMISED: only makes one API call per city (was making up to N*8 calls).
- * Availability data is intentionally skipped here — it changes daily and is
- * fetched on-demand in the frontend AJAX handlers.
- *
- * @param int|string $city_id
- * @return bool
- */
 function musement_fetch_activities_for_city($city_id) {
     $city_id = (string) $city_id;
-    $token   = function_exists('musement_get_access_token') ? musement_get_access_token() : null;
-
+    $token = function_exists('musement_get_access_token') ? musement_get_access_token() : null;
+    
     if (!$token) {
         error_log('[MUSEMENT] No token available');
         return false;
     }
-
-    // Single API call: fetch up to 50 activities for the city.
+    
+    // 1. Obtener actividades de la ciudad
     $activities_url = add_query_arg([
         'city_in' => $city_id,
-        'limit'   => 50,
+        'limit' => 50,
     ], 'https://sandbox.musement.com/api/v3/activities');
-
+    
     $res = wp_remote_get($activities_url, [
         'timeout' => 30,
         'headers' => [
-            'Authorization'          => 'Bearer ' . $token,
-            'Accept'                 => 'application/json',
+            'Authorization' => 'Bearer ' . $token,
+            'Accept' => 'application/json',
             'X-Musement-Application' => MUSEMENT_APPLICATION,
-            'X-Musement-Currency'    => 'EUR',
-            'X-Musement-Market'      => 'es',
-            'X-Musement-Version'     => '3.4.0',
+            'X-Musement-Currency' => 'EUR',
+            'X-Musement-Market' => 'es',
+            'X-Musement-Version' => '3.4.0',
         ],
     ]);
-
+    
     if (is_wp_error($res)) {
-        error_log('[MUSEMENT] Error fetching activities: ' . $res->get_error_message());
+        error_log('[MUSEMENT] Error: ' . $res->get_error_message());
         return false;
     }
-
-    $body       = json_decode(wp_remote_retrieve_body($res), true);
+    
+    $body = json_decode(wp_remote_retrieve_body($res), true);
     $activities = $body['data'] ?? [];
-
+    
     if (empty($activities)) {
-        error_log('[MUSEMENT] No activities found for city ' . $city_id);
+        error_log('[MUSEMENT] No activities found');
         return false;
     }
-
-    // Build a lightweight map: uuid => { title, products[] }.
-    // Product prices are taken from the retail_price on the activity itself;
-    // availability is NOT fetched here to avoid N*8 HTTP calls on every admin save.
+    
     $map = [];
+    
+    // 2. Para cada actividad, buscar una fecha con disponibilidad
     foreach ($activities as $activity) {
         $uuid = $activity['uuid'] ?? '';
         if (!$uuid) continue;
-
-        $retail_price = $activity['retail_price'] ?? [];
-
-        $map[$uuid] = [
-            'title'    => $activity['title'] ?? 'Actividad sin título',
-            'products' => [
-                [
-                    'product_identifier' => $uuid,
-                    'name'               => $activity['title'] ?? 'Entrada',
-                    'retail_price'       => [
-                        'value'           => $retail_price['value']    ?? 0,
-                        'currency'        => $retail_price['currency'] ?? 'EUR',
-                        'formatted_value' => isset($retail_price['value'])
-                            ? number_format($retail_price['value'], 2) . ' €'
-                            : '0 €',
-                    ],
+        
+        $products = [];
+        
+        // Buscar disponibilidad en los próximos 60 días
+        for ($i = 7; $i <= 60; $i += 7) {
+            $test_date = date('Y-m-d', strtotime("+$i days"));
+            $availability_url = sprintf(
+                'https://sandbox.musement.com/api/v3/activities/%s/dates/%s',
+                $uuid,
+                $test_date
+            );
+            
+            $avail_res = wp_remote_get($availability_url, [
+                'timeout' => 20,
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $token,
+                    'Accept' => 'application/json',
+                    'X-Musement-Application' => MUSEMENT_APPLICATION,
+                    'X-Musement-Currency' => 'EUR',
+                    'X-Musement-Market' => 'es',
+                    'X-Musement-Version' => '3.4.0',
                 ],
-            ],
+            ]);
+            
+            if (!is_wp_error($avail_res)) {
+                $avail_data = json_decode(wp_remote_retrieve_body($avail_res), true);
+                
+                // Buscar productos en la estructura correcta según la docu
+                if (isset($avail_data['ticket_products']) && is_array($avail_data['ticket_products'])) {
+                    $products = $avail_data['ticket_products'];
+                    break;
+                }
+                if (isset($avail_data['data']['ticket_products']) && is_array($avail_data['data']['ticket_products'])) {
+                    $products = $avail_data['data']['ticket_products'];
+                    break;
+                }
+            }
+        }
+        
+        // Si no hay productos, mostrar mensaje en el admin
+        if (empty($products)) {
+            error_log("[MUSEMENT] No products found for activity: {$activity['title']}");
+        }
+        
+        // Normalizar productos para el admin
+        $normalized_products = [];
+        foreach ($products as $product) {
+            $price = $product['retail_price'] ?? ['value' => 0, 'currency' => 'EUR'];
+            $normalized_products[] = [
+                'product_identifier' => $product['uuid'] ?? $product['id'] ?? '',
+                'name' => $product['name'] ?? 'Entrada',
+                'retail_price' => [
+                    'value' => $price['value'] ?? 0,
+                    'currency' => $price['currency'] ?? 'EUR',
+                    'formatted_value' => isset($price['value']) ? number_format($price['value'], 2) . ' €' : '0 €',
+                ],
+            ];
+        }
+        
+        $map[$uuid] = [
+            'title' => $activity['title'] ?? 'Actividad sin título',
+            'products' => $normalized_products,
         ];
     }
-
+    
     if (!empty($map)) {
         update_option('musement_products_cache', $map);
         error_log('[MUSEMENT] Cache actualizado con ' . count($map) . ' actividades');
         return true;
     }
-
+    
     return false;
 }
 
@@ -770,4 +642,99 @@ add_action('admin_init', function () {
     }
 });
 
-// (Debug endpoints removed — they output raw HTML and exit, which is unsafe in production.)
+// TEMPORAL - Para depurar la API
+// DEBUG TEMPORAL - Para ver qué devuelve la API de disponibilidad
+add_action('admin_init', function() {
+    if (isset($_GET['debug_products']) && current_user_can('manage_options')) {
+        $token = musement_get_access_token();
+        $uuid = '037e288f-036f-41fd-8268-0b9309579aff'; // Una actividad de ejemplo
+        
+        echo '<h2>Debug de productos para actividad: ' . $uuid . '</h2>';
+        
+        // Probar diferentes fechas
+        $fechas = [
+            date('Y-m-d', strtotime('+7 days')),
+            date('Y-m-d', strtotime('+14 days')),
+            date('Y-m-d', strtotime('+30 days')),
+            date('Y-m-d', strtotime('+60 days')),
+        ];
+        
+        foreach ($fechas as $fecha) {
+            echo '<h3>Fecha: ' . $fecha . '</h3>';
+            
+            $url = 'https://sandbox.musement.com/api/v3/activities/' . $uuid . '/dates/' . $fecha;
+            
+            $res = wp_remote_get($url, [
+                'headers' => [
+                    'Authorization' => 'Bearer ' . $token,
+                    'X-Musement-Application' => MUSEMENT_APPLICATION,
+                    'X-Musement-Version' => '3.4.0',
+                ],
+            ]);
+            
+            if (is_wp_error($res)) {
+                echo '<p>Error: ' . $res->get_error_message() . '</p>';
+                continue;
+            }
+            
+            $data = json_decode(wp_remote_retrieve_body($res), true);
+            echo '<pre>';
+            echo 'Status code: ' . wp_remote_retrieve_response_code($res) . "\n";
+            echo 'Tiene ticket_products? ' . (isset($data['ticket_products']) ? 'SI' : 'NO') . "\n";
+            echo 'Tiene products? ' . (isset($data['products']) ? 'SI' : 'NO') . "\n";
+            echo 'Estructura: ' . print_r(array_keys($data), true) . "\n";
+            
+            if (isset($data['ticket_products'])) {
+                echo 'Cantidad de productos: ' . count($data['ticket_products']) . "\n";
+                echo 'Primer producto: ' . print_r($data['ticket_products'][0] ?? 'ninguno', true);
+            }
+            echo '</pre><hr>';
+        }
+        
+        exit;
+    }
+});
+
+add_action('admin_init', function() {
+    if (isset($_GET['debug_search']) && current_user_can('manage_options')) {
+        $token = musement_get_access_token();
+        
+        // Buscar actividades con disponibilidad real
+        $url = add_query_arg([
+            'city_in' => get_option('musement_city_id', ''),
+            'available_from' => date('Y-m-d', strtotime('+7 days')),
+            'available_to' => date('Y-m-d', strtotime('+30 days')),
+            'limit' => 5,
+        ], 'https://sandbox.musement.com/api/v3/activities');
+        
+        echo '<h2>Buscando actividades con disponibilidad</h2>';
+        echo '<p>URL: ' . $url . '</p>';
+        
+        $res = wp_remote_get($url, [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'X-Musement-Application' => MUSEMENT_APPLICATION,
+                'X-Musement-Version' => '3.4.0',
+            ],
+        ]);
+        
+        $data = json_decode(wp_remote_retrieve_body($res), true);
+        
+        echo '<pre>';
+        echo 'Status: ' . wp_remote_retrieve_response_code($res) . "\n";
+        
+        if (isset($data['data']) && is_array($data['data'])) {
+            foreach ($data['data'] as $activity) {
+                echo "\n---\n";
+                echo "UUID: {$activity['uuid']}\n";
+                echo "Título: {$activity['title']}\n";
+                echo "Tiene retail_price: " . (isset($activity['retail_price']) ? 'SI' : 'NO') . "\n";
+            }
+        } else {
+            print_r($data);
+        }
+        echo '</pre>';
+        
+        exit;
+    }
+});

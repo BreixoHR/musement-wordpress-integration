@@ -39,25 +39,9 @@
                 '<div class="musement-tour__actions">' +
                     '<button class="musement-tour__button" type="button">Ver Disponibilidad</button>' +
                 '</div>' +
-                // calendar first
-                '<div class="musement-tour__calendar"></div>' +
-                // slots after calendar
                 '<div class="musement-tour__slots"></div>' +
-                // change day button hidden initially
-                '<button class="musement-change-day musement-tour__button" style="display:none; margin-top:10px;">Cambiar día</button>' +
+                '<div class="musement-tour__calendar"></div>' +
             '</div>';
-        
-        // Attach listener to change day button
-        const changeBtn = article.querySelector('.musement-change-day');
-        if (changeBtn) {
-            changeBtn.addEventListener('click', function () {
-                const calendar = article.querySelector('.musement-tour__calendar');
-                const slots = article.querySelector('.musement-tour__slots');
-                if (calendar) calendar.style.display = '';
-                if (slots) slots.innerHTML = '';
-                changeBtn.style.display = 'none';
-            });
-        }
 
         const media = article.querySelector('.musement-tour__media');
 
@@ -216,12 +200,10 @@
                 
                 const select = document.createElement('select');
                 select.className = 'musement-language-select';
-                select.style.padding = '4px 24px 4px 6px';
+                select.style.padding = '4px 6px';
                 select.style.borderRadius = '4px';
                 select.style.border = '1px solid #cbd5e1';
                 select.style.fontSize = '12px';
-                select.style.minWidth = '100px';
-                select.style.appearance = 'auto';
                 
                 slot.languages.forEach(function(lang) {
                     const option = document.createElement('option');
@@ -251,7 +233,6 @@
 
             // BOTÓN
             const btn = document.createElement('button');
-            btn.className = 'musement-tour__button';
             btn.textContent = hasAvailability ? 'Añadir' : 'Agotado';
             btn.disabled = !hasAvailability;
             
@@ -710,13 +691,10 @@
             });
         }
 
-                // Hide calendar and show 'Cambiar día' button after selecting a date
-                const calendar = card.querySelector('.musement-tour__calendar');
-                const changeBtn = card.querySelector('.musement-change-day');
-                if (calendar) calendar.style.display = 'none';
-                if (changeBtn) changeBtn.style.display = '';
-                console.log("SLOTS NORMALIZADOS:", slots);
-                renderSlots(card, slots);
+
+                    console.log("SLOTS NORMALIZADOS:", slots);
+
+                    renderSlots(card, slots);
 
                 })
                 .catch(function (err) {
@@ -1156,12 +1134,170 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
             },
             timestamp: new Date().toISOString()
         };
+
+        if (vouchers.length > 0 && orderUuid){
+            console.log('═══════════════════════════════════════════════════════════');
+            console.log('📦 INICIO PROCESO DE FUSIONADO DE LOS VOUCHERS. ');
+            console.log('═══════════════════════════════════════════════════════════');
+            fetch(MUSEMENT.ajax, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    action: 'musement_merge_vouchers',
+                    nonce: MUSEMENT.nonce,
+                    order_uuid: orderUuid,
+                    voucher_urls: JSON.stringify(vouchers.map(v => v.url)),
+                    voucher_names: JSON.stringify(vouchers.map(v => v.activity_name))
+                })
+            })
+            .then(r => r.json())
+            .then(result => {
+                console.log('═══════════════════════════════════════════════════════════');
+                console.log('📦 RESULTADO DEL PROCESO DE FUSIONADO DE LOS VOUCHERS.    ');
+                console.log('═══════════════════════════════════════════════════════════');
+
+                let mergedPdfUrl = null;
+                let mergedPdfPath = null;
+
+
+                if (result.success && result.data.merged_pdf) {
+                    mergedPdfUrl = result.data.merged_pdf;
+                    mergedPdfPath = result.data.merged_pdf_path;
+                    mergedPdfBase64 = result.data.merged_pdf_base64;
+
+                    const finalPayload = buildFinalPayload(
+                        vouchers, 
+                        tickets, 
+                        orderData, 
+                        mergedPdfUrl,
+                        mergedPdfPath,
+                        mergedPdfBase64
+                    );
+                    sendPayloadToEndpoint(finalPayload);
+                    
+                    console.log('═══════════════════════════════════════════════════════════');
+                    console.log('📦 PAYLOAD FINAL CON PDF FUSIONADO');
+                    console.log('═══════════════════════════════════════════════════════════');
+                    console.log(JSON.stringify(finalPayload, null, 2));
+                    console.log('═══════════════════════════════════════════════════════════');
+
+                    console.log('✅ PDF fusionado correctamente:', result.data.merged_pdf);
+                    // Actualizar el payload con el PDF fusionado
+                    // updatePayloadWithMergedPdf(result.data.merged_pdf, vouchers, tickets, orderData);
+                } else {
+                    console.warn('⚠️ No se pudo fusionar, usando vouchers individuales');
+                    // sendPayloadWithoutMerge(vouchers, tickets, orderData);
+                }
+            })
+        }
         
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('📦 PAYLOAD COMPLETO CON URLs DE VOUCHERS Y TICKETS');
+        console.log('📦 PAYLOAD COMPLETO CON URLs DE VOUCHERS Y TICKETS 589');
         console.log('═══════════════════════════════════════════════════════════');
         console.log(JSON.stringify(payload, null, 2));
         console.log('═══════════════════════════════════════════════════════════');
+        
+        return payload;
+    }
+
+    function sendPayloadToEndpoint(payload) {
+        console.log('📤 Enviando payload a endpoint...');
+        
+        // 🔥 Si hay un PDF fusionado, enviarlo como FormData
+        if (payload.documents.merged_voucher && payload.documents.merged_voucher.path) {
+            // Opción 1: Enviar solo el PDF (recomendado)
+            sendPdfAsFormData(payload.documents.merged_voucher.path, payload);
+            
+            // Opción 2: Enviar el payload completo como JSON + PDF
+            // sendFullPayloadAsFormData(payload);
+        } else {
+            // Sin PDF, enviar solo JSON
+            // sendJsonPayload(payload);
+        }
+    }
+
+    /**
+     * Envía el PDF como FormData a tu endpoint
+     */
+    function sendPdfAsFormData(pdfPath, payload) {
+        console.log('📤 Enviando PDF desde el backend...');
+    
+        // 🔥 En lugar de enviar el PDF directamente, pedimos al backend que lo envíe
+        fetch(MUSEMENT.ajax, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                action: 'musement_send_pdf_to_endpoint',
+                nonce: MUSEMENT.nonce,
+                order_uuid: orderUuid,
+                endpoint_url: 'http://localhost:8777/test',
+                payload: JSON.stringify(payload)
+            })
+        })
+        .then(r => r.json())
+        .then(result => {
+            if (result.success) {
+                console.log('✅ PDF enviado desde el backend:', result.data);
+            } else {
+                console.error('❌ Error enviando PDF:', result.data?.message);
+            }
+        })
+        .catch(error => {
+            console.error('❌ Error:', error);
+        });
+    }
+
+    /**
+     * Construye el payload final con o sin PDF fusionado
+     */
+    function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl, mergedPdfPath,mergedPdfBase64) {
+        const payload = {
+            webhook: {
+                id: "5ec5abc7-6a49-4aa5-930b-3dfb9cbb9123",
+                event: "order_update_final",
+                url: "",
+                retryOnError: true,
+                useContactLanguage: true,
+                capabilities: ["octo/cart", "octo/questions", "octo/extras", "ventrata/dashboard"]
+            },
+            bookings: octoPayload?.order?.bookings || "esto es una prueba de rendimiento.",
+            order: orderData || {
+                id: orderUuid,
+                supplierReference: bookingRef,
+                status: "CONFIRMED",
+                utcCreatedAt: new Date().toISOString(),
+                utcUpdatedAt: new Date().toISOString()
+            },
+            documents: {
+                // 📄 PDF FUSIONADO (si existe)
+                ...(mergedPdfUrl && {
+                    merged_voucher: {
+                        url: mergedPdfUrl,
+                        path: mergedPdfPath,
+                        type: "merged_voucher",
+                        count: vouchers.length,
+                        description: "Todos los vouchers fusionados en un solo PDF",
+                        base64: mergedPdfBase64
+                    }
+                }),
+                // Vouchers individuales (siempre presentes)
+                vouchers: vouchers.map(v => ({
+                    activity_name: v.activity_name,
+                    url: v.url,
+                    type: "voucher"
+                })),
+                // Tickets (si existen)
+                ...(tickets.length > 0 && {
+                    tickets: tickets.map(t => ({
+                        activity_name: t.activity_name,
+                        ticket_id: t.ticket_id,
+                        url: t.url,
+                        type: "ticket"
+                    }))
+                })
+            },
+            timestamp: new Date().toISOString()
+        };
         
         return payload;
     }
