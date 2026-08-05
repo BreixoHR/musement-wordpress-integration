@@ -412,18 +412,26 @@ function musement_get_cities() {
         );
 
     if (is_wp_error($res)) {
+        error_log('[MUSEMENT] ❌ Error de red pidiendo ciudades: ' . $res->get_error_message());
         return [];
     }
 
-        $body = json_decode(wp_remote_retrieve_body($res), true);
+        $status = wp_remote_retrieve_response_code($res);
+        $raw_body = wp_remote_retrieve_body($res);
+        $body = json_decode($raw_body, true);
 
-        if (is_array($body['data'] ?? null)) {
-            $cities = $body['data'];
-        } elseif (is_array($body)) {
-            $cities = $body;
-        } else {
+        // Antes, si Musement devolvía un error (p.ej. el 401 "malformed request" que
+        // se ve cuando el token está vacío porque el login falló), su cuerpo
+        // {"code":1401,"message":"..."} caía en el "elseif (is_array($body))" de
+        // más abajo y se trataba como si fuera la lista de ciudades -- el select
+        // del admin se quedaba sin opciones válidas pero SIN mostrar el aviso de
+        // "no se han cargado ciudades", así que parecía que todo iba bien.
+        if ($status < 200 || $status >= 300 || !is_array($body['data'] ?? null)) {
+            error_log('[MUSEMENT] ❌ No se pudieron cargar ciudades. HTTP ' . $status . '. Respuesta: ' . $raw_body);
             return [];
         }
+
+        $cities = $body['data'];
 
         set_transient('musement_cities', $cities, 12 * HOUR_IN_SECONDS);
 

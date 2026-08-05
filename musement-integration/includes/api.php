@@ -313,13 +313,27 @@ function musement_get_access_token() {
         ])
     ]);
 
+    // Esta función es la única de todo el plugin que no dejaba rastro en el log
+    // cuando fallaba -- cualquier fallo de login se traducía en un 401 "malformed
+    // request" varias capas más arriba (ciudades vacías, catálogo vacío...) sin
+    // ninguna pista de la causa real. Se loguea el status y el cuerpo tal cual
+    // los devuelve Musement para poder diagnosticar credenciales/red.
     if (is_wp_error($response)) {
+        error_log('[MUSEMENT] ❌ Login fallido (WP_Error): ' . $response->get_error_message());
         return null;
     }
 
-    $body = json_decode(wp_remote_retrieve_body($response), true);
+    $status = wp_remote_retrieve_response_code($response);
+    $raw_body = wp_remote_retrieve_body($response);
+    $body = json_decode($raw_body, true);
+
+    if ($status < 200 || $status >= 300) {
+        error_log('[MUSEMENT] ❌ Login fallido. HTTP ' . $status . '. Respuesta: ' . $raw_body);
+        return null;
+    }
 
     if (empty($body['access_token'])) {
+        error_log('[MUSEMENT] ❌ Login sin access_token en la respuesta. HTTP ' . $status . '. Respuesta: ' . $raw_body);
         return null;
     }
 
