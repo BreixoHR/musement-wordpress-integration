@@ -308,7 +308,8 @@ function musement_products_field() {
         
         echo '<tr>';
         echo '<td><strong>' . esc_html($activity['title'] ?? 'Actividad sin título') . '</strong><br>';
-        echo '<small>' . esc_html($activity_uuid) . '</small>如果';
+        echo '<small>' . esc_html($activity_uuid) . '</small>';
+        echo '</td>';
         echo '<td>';
         if ($original_price > 0) {
             echo number_format($original_price, 2) . ' €';
@@ -323,12 +324,14 @@ function musement_products_field() {
         echo '       style="width: 80px;" placeholder="0"';
         echo '       oninput="this.value = this.value.replace(/\\./g, \',\').replace(/[^0-9,]/g, \'\')"';
         echo '       onblur="if(this.value === \'\') this.value = \'0\'; if(this.value.endsWith(\',\')) this.value = this.value.slice(0, -1);"> %';
+        echo '</td>';
         echo '<td>';
         if ($final_price > 0) {
             echo '<strong style="color: #2e7d32;">' . number_format($final_price, 2) . ' €</strong>';
         } else {
             echo '<span style="color: #999;">-</span>';
         }
+        echo '</td>';
         echo '</tr>';
     }
     

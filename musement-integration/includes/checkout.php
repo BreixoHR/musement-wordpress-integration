@@ -52,8 +52,32 @@ function musement_checkout_start_ajax(): void
         ], 400);
     }
 
+    $remote_sync = musement_remote_cart_sync_from_local();
+    if (is_wp_error($remote_sync)) {
+        wp_send_json_error([
+            'message' => $remote_sync->get_error_message(),
+            'remote_error' => $remote_sync->get_error_data(),
+        ], 502);
+    }
+
+    if (!musement_remote_cart_update_customer($customer)) {
+        wp_send_json_error([
+            'message' => __('No se pudieron actualizar los datos del cliente en el carrito remoto.', 'musement-integration'),
+        ], 502);
+    }
+
+    $items = musement_cart_items();
+    $summary = musement_cart_total($items);
+
     $order_id = musement_orders_create($customer, $items, $summary);
     $order = musement_orders_get($order_id);
+
+    if (!$order) {
+        wp_send_json_error([
+            'message' => __('No se pudo crear el pedido local.', 'musement-integration'),
+        ], 500);
+    }
+
     $cart_uuid = musement_remote_cart_get_id();
     if ($cart_uuid) {
         // reusar integration_errors_json para no tocar esquema DB
@@ -64,13 +88,8 @@ function musement_checkout_start_ajax(): void
         ]);
     }
 
-    if (!$order) {
-        wp_send_json_error([
-            'message' => __('No se pudo crear el pedido local.', 'musement-integration'),
-        ], 500);
-    }
-
     $order['selected_payment_method'] = $payment_method;
+    $order['cart_uuid'] = $cart_uuid;
     $payment = musement_payment_create_session($order);
     $debug_payloads = [];
 

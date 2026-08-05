@@ -7,6 +7,25 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+/**
+ * Candado real (a nivel de servidor MySQL, no de PHP) para evitar que dos
+ * peticiones concurrentes para la misma clave (p.ej. mismo cart_uuid, o mismo
+ * "añadir al carrito") se ejecuten en paralelo. Un transient normal
+ * (get_transient/set_transient) no es atómico: si dos peticiones llegan casi
+ * al mismo tiempo en procesos PHP distintos, ambas pueden leer "no hay
+ * candado" antes de que ninguna escriba el suyo. GET_LOCK lo gestiona el
+ * propio servidor MySQL, así que sí es atómico entre procesos.
+ */
+function musement_order_lock_acquire(string $lock_name, int $timeout = 0): bool {
+    global $wpdb;
+    return (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, %d)', $lock_name, $timeout)) === 1;
+}
+
+function musement_order_lock_release(string $lock_name): void {
+    global $wpdb;
+    $wpdb->query($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock_name));
+}
+
 function musement_integration_api_request(string $endpoint, array $query_args = [])
 {
     $base_url = 'https://api.musement.com/api/v3/';

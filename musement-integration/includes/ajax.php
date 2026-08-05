@@ -1,13 +1,4 @@
 <?php
-// 🔥 FORZAR LIMPIEZA DE BOM - TEMPORAL
-ob_start();
-header('Content-Type: application/json; charset=utf-8');
-
-// Limpiar cualquier buffer que pueda tener BOM
-while (ob_get_level()) {
-    ob_end_clean();
-}
-ob_start();
 
 if (!defined('ABSPATH')) {
     exit;
@@ -120,21 +111,41 @@ function musement_day_availability() {
 
     $uuid = sanitize_text_field($_POST['uuid'] ?? '');
     $date = sanitize_text_field($_POST['date'] ?? '');
+    $pickup = isset($_POST['pickup']) ? sanitize_text_field($_POST['pickup']) : '';
+
+    // Log para depuración
+    error_log('[MUSEMENT] === DAY AVAILABILITY ===');
+    error_log('[MUSEMENT] UUID: ' . $uuid);
+    error_log('[MUSEMENT] Date: ' . $date);
+    error_log('[MUSEMENT] Pickup: ' . ($pickup ?: 'NINGUNO'));
 
     if (!$uuid || !$date) {
+        error_log('[MUSEMENT] ❌ Missing uuid or date');
         wp_send_json_error(['message' => 'Missing uuid or date'], 400);
+        return;
     }
 
+    $token = musement_get_access_token();
+    
+    if (!$token) {
+        error_log('[MUSEMENT] ❌ Could not get access token');
+        wp_send_json_error(['message' => 'Could not get access token'], 500);
+        return;
+    }
+
+    // 🔥 CONSTRUIR LA URL
     $url = sprintf(
         'https://sandbox.musement.com/api/v3/activities/%s/dates/%s',
         rawurlencode($uuid),
         rawurlencode($date)
     );
 
-    $token = musement_get_access_token();
-    
-    if (!$token) {
-        wp_send_json_error(['message' => 'Could not get access token'], 500);
+    // 🔥 SI HAY PICKUP, AGREGARLO COMO PARÁMETRO DE QUERY
+    if (!empty($pickup)) {
+        $url = add_query_arg('pickup', $pickup, $url);
+        error_log('[MUSEMENT] URL con pickup: ' . $url);
+    } else {
+        error_log('[MUSEMENT] URL sin pickup: ' . $url);
     }
 
     $res = wp_remote_get($url, [
@@ -150,16 +161,38 @@ function musement_day_availability() {
     ]);
 
     if (is_wp_error($res)) {
+        error_log('[MUSEMENT] ❌ Error WP: ' . $res->get_error_message());
         wp_send_json_error(['message' => $res->get_error_message()], 500);
+        return;
     }
 
-    $data = json_decode(wp_remote_retrieve_body($res), true);
+    $body = wp_remote_retrieve_body($res);
+    $http_code = wp_remote_retrieve_response_code($res);
     
-    // NORMALIZACIÓN
-    if (is_array($data) && isset($data[0]['groups'])) {
-        $data = ['groups' => $data[0]['groups']];
+    error_log('[MUSEMENT] HTTP Code: ' . $http_code);
+    error_log('[MUSEMENT] Body (primeros 500 chars): ' . substr($body, 0, 500));
+
+    // 🔥 SI HAY ERROR HTTP, MOSTRAR EL MENSAJE
+    if ($http_code !== 200) {
+        $error_data = json_decode($body, true);
+        $error_message = is_array($error_data) && isset($error_data['message']) 
+            ? $error_data['message'] 
+            : 'HTTP Error: ' . $http_code;
+        error_log('[MUSEMENT] ❌ Error: ' . $error_message);
+        wp_send_json_error(['message' => $error_message, 'code' => $http_code], $http_code);
+        return;
     }
+
+    // 🔥 DECODIFICAR LA RESPUESTA
+    $data = json_decode($body, true);
     
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        error_log('[MUSEMENT] ❌ Error JSON: ' . json_last_error_msg());
+        wp_send_json_error(['message' => 'Error al parsear JSON: ' . json_last_error_msg()], 500);
+        return;
+    }
+
+    error_log('[MUSEMENT] ✅ Datos recibidos correctamente. Tipo: ' . gettype($data));
     wp_send_json_success($data);
 }
 
@@ -312,7 +345,7 @@ function musement_activities() {
     // Mostrar actividad de prueba aunque tenga margen 0 (para pruebas)
     $test_activities[] = [
         'uuid' => $test_uuid,
-        'title' => '🧪 TEST: Tour con confirmación instantánea',
+        'title' => '🧪 Galeria emanuelle.',
         'description' => 'Actividad de prueba para verificar el flujo completo de reserva. Tiene disponibilidad garantizada.',
         'image' => 'https://images.musement.com/cover/0002/39/milan-vittorio-emanuele-ii-gallery-italy-jpg_header-138313.jpeg',
         'price' => [
@@ -661,7 +694,53 @@ function musement_get_pdf_base64() {
 }
 
 
-// En plugin.php o includes/ajax.php
+function musement_participant_schema() {
+    check_ajax_referer('musement_ajax', 'nonce');
+
+    $uuid = isset($_POST['uuid'])
+        ? sanitize_text_field(wp_unslash($_POST['uuid']))
+        : '';
+
+    if (!$uuid) {
+        wp_send_json_error([
+            'message' => 'Missing activity uuid.',
+        ], 400);
+    }
+
+    $response = wp_remote_get(
+        "https://sandbox.musement.com/api/v3/activities/{$uuid}/participants-info/schema",
+        [
+            'timeout' => 20,
+            'headers' => [
+                'Accept'                  => 'application/json',
+                'X-Musement-Application'  => MUSEMENT_APPLICATION,
+                'X-Musement-Version'      => '3.4.0',
+                'Accept-Language'         => 'es-ES',
+            ],
+        ]
+    );
+
+    if (is_wp_error($response)) {
+        wp_send_json_error([
+            'message' => $response->get_error_message(),
+        ], 500);
+    }
+
+    $code = wp_remote_retrieve_response_code($response);
+    $body = wp_remote_retrieve_body($response);
+
+    if ($code >= 400) {
+        wp_send_json_error([
+            'code' => $code,
+            'body' => json_decode($body, true),
+        ], $code);
+    }
+
+    wp_send_json_success(json_decode($body, true));
+}
+
+add_action('wp_ajax_musement_participant_schema', 'musement_participant_schema');
+add_action('wp_ajax_nopriv_musement_participant_schema', 'musement_participant_schema');
 
 /**
  * Endpoint para enviar el PDF a un endpoint externo desde el backend
@@ -680,32 +759,28 @@ function musement_send_pdf_to_endpoint() {
     $endpoint_url = sanitize_text_field($_POST['endpoint_url'] ?? '');
     $payload_json = stripslashes($_POST['payload'] ?? '{}');
     $payload = json_decode($payload_json, true);
-    
-    error_log('[MUSEMENT] 📤 Enviando PDF al endpoint');
+
+    error_log('[MUSEMENT] 📤 Enviando payload al endpoint');
     error_log('[MUSEMENT] 📤 Order UUID: ' . $order_uuid);
     error_log('[MUSEMENT] 📤 Endpoint: ' . $endpoint_url);
-    
+
     if (!$order_uuid || !$endpoint_url) {
         wp_send_json_error(['message' => 'Faltan parámetros']);
         return;
     }
-    
-    // Obtener la ruta del PDF fusionado
-    $merged_path = get_post_meta($order_uuid, '_musement_merged_voucher', true);
-    
-    if (!$merged_path || !file_exists($merged_path)) {
-        error_log('[MUSEMENT] ❌ PDF no encontrado en: ' . $merged_path);
-        wp_send_json_error(['message' => 'No se encontró el PDF fusionado']);
+
+    if (!is_array($payload)) {
+        error_log('[MUSEMENT] ❌ Payload inválido recibido: ' . $payload_json);
+        wp_send_json_error(['message' => 'El payload recibido no es un JSON válido']);
         return;
     }
-    
-    error_log('[MUSEMENT] 📤 PDF encontrado: ' . $merged_path . ' (' . filesize($merged_path) . ' bytes)');
-    
-    // Enviar el PDF usando cURL con más opciones
-    $result = musement_send_pdf_via_curl($endpoint_url, $merged_path, $order_uuid, $payload);
+
+    // El PDF fusionado ya viaja embebido en base64 dentro de payload.documents.merged_voucher.base64,
+    // por lo que se envía todo el payload como JSON puro (no como multipart/form-data).
+    $result = musement_send_pdf_via_curl($endpoint_url, $order_uuid, $payload);
     
     if (is_wp_error($result)) {
-        error_log('[MUSEMENT] ❌ Error enviando PDF: ' . $result->get_error_message());
+        error_log('[MUSEMENT] ❌ Error enviando peticion a salesforce: ' . $result->get_error_message());
         wp_send_json_error([
             'message' => $result->get_error_message(),
             'debug' => $result->get_error_data()
@@ -721,46 +796,39 @@ function musement_send_pdf_to_endpoint() {
 }
 
 /**
- * Envía un PDF a un endpoint usando cURL
+ * Envía el payload (con el PDF fusionado ya embebido en base64) al endpoint de Salesforce
+ * como JSON puro, que es lo que espera MusementBookingService.doPost().
  */
-function musement_send_pdf_via_curl($endpoint_url, $pdf_path, $order_uuid, $payload = []) {
+function musement_send_pdf_via_curl($endpoint_url, $order_uuid, $payload = []) {
     // Verificar que curl está disponible
     if (!function_exists('curl_init')) {
         return new WP_Error('curl_not_available', 'cURL no está disponible en el servidor');
     }
-    
-    // Crear archivo para subir
-    $file = new CURLFile($pdf_path, 'application/pdf', basename($pdf_path));
-    
-    // Datos del formulario
-    $post_fields = [
-        'file' => $file,
-        'order_uuid' => $order_uuid,
-        'timestamp' => date('Y-m-d H:i:s'),
-        'payload' => json_encode($payload)
-    ];
-    
+
+    $body = wp_json_encode($payload);
+
     $curl = curl_init();
-    
+
     curl_setopt_array($curl, [
         CURLOPT_URL => $endpoint_url,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $post_fields,
+        CURLOPT_POSTFIELDS => $body,
         CURLOPT_TIMEOUT => 60,
         CURLOPT_HEADER => false,
-        CURLOPT_SSL_VERIFYPEER => false, 
+        CURLOPT_SSL_VERIFYPEER => false,
         CURLOPT_SSL_VERIFYHOST => false,
         CURLOPT_HTTPHEADER => [
             'Accept: application/json',
+            'Content-Type: application/json',
         ]
     ]);
-    
+
     // Log para depuración
-    error_log('[MUSEMENT] Enviando PDF a: ' . $endpoint_url);
-    error_log('[MUSEMENT] Archivo: ' . $pdf_path);
-    error_log('[MUSEMENT] Tamaño: ' . filesize($pdf_path) . ' bytes');
-    
+    error_log('[MUSEMENT] Enviando payload JSON a: ' . $endpoint_url);
+    error_log('[MUSEMENT] Order UUID: ' . $order_uuid);
+    error_log('[MUSEMENT] Tamaño del payload: ' . strlen($body) . ' bytes');
+
     $response = curl_exec($curl);
     $error = curl_error($curl);
     $http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
@@ -782,6 +850,271 @@ function musement_send_pdf_via_curl($endpoint_url, $pdf_path, $order_uuid, $payl
     // Intentar parsear JSON
     $decoded = json_decode($response, true);
     return $decoded ? $decoded : $response;
+}
+
+/**
+ * Obtener opciones de pickup para un producto
+ */
+function musement_get_pickup_options($uuid) {
+    $token = musement_get_access_token();
+    
+    if (!$token) {
+        return new WP_Error('no_token', 'No se pudo obtener el token de acceso');
+    }
+    
+    $url = sprintf(
+        'https://sandbox.musement.com/api/v3/activities/%s/pickups',
+        rawurlencode($uuid)
+    );
+    
+    $response = wp_remote_get($url, [
+        'timeout' => 15,
+        'headers' => [
+            'Authorization' => 'Bearer ' . $token,
+            'Accept-Language' => 'es-ES',
+            'X-Musement-Application' => MUSEMENT_APPLICATION,
+            'X-Musement-Currency' => 'EUR',
+            'X-Musement-Market' => 'es',
+            'X-Musement-Version' => '3.4.0',
+        ]
+    ]);
+    
+    if (is_wp_error($response)) {
+        return $response;
+    }
+    
+    $data = json_decode(wp_remote_retrieve_body($response), true);
+    
+    if (empty($data) || !is_array($data)) {
+        return [];
+    }
+    
+    return $data;
+}
+
+/**
+ * Endpoint AJAX para obtener opciones de pickup
+ */
+add_action('wp_ajax_musement_get_pickup_options', 'musement_ajax_get_pickup_options');
+add_action('wp_ajax_nopriv_musement_get_pickup_options', 'musement_ajax_get_pickup_options');
+
+function musement_ajax_get_pickup_options() {
+    check_ajax_referer('musement_ajax', 'nonce');
+    
+    $uuid = sanitize_text_field($_POST['uuid'] ?? '');
+    
+    if (!$uuid) {
+        wp_send_json_error(['message' => 'Falta el UUID del producto']);
+        return;
+    }
+    
+    error_log('[MUSEMENT] 📍 Buscando pickups para: ' . $uuid);
+    
+    $pickups = musement_get_pickup_options($uuid);
+    
+    if (is_wp_error($pickups)) {
+        error_log('[MUSEMENT] ❌ Error: ' . $pickups->get_error_message());
+        wp_send_json_error(['message' => $pickups->get_error_message()]);
+        return;
+    }
+    
+    // Si no hay pickups, devolver array vacío
+    if (empty($pickups) || !is_array($pickups)) {
+        error_log('[MUSEMENT] ⚠️ No hay pickups disponibles');
+        wp_send_json_success([
+            'pickups' => [],
+            'count' => 0
+        ]);
+        return;
+    }
+    
+    // Formatear opciones de pickup - AHORA CON EL FORMATO CORRECTO
+    $formatted_pickups = array_map(function($pickup) {
+        // Los pickups vienen con 'uuid' en lugar de 'id'
+        $id = $pickup['uuid'] ?? $pickup['id'] ?? uniqid('pickup_');
+        
+        // El nombre puede estar en 'name'
+        $name = $pickup['name'] ?? $pickup['location_name'] ?? 'Punto de recogida';
+        
+        // El tipo puede ser HOTEL, AIRPORT, etc.
+        $type = $pickup['type'] ?? 'OTHER';
+        
+        // Para dirección, podríamos usar el nombre + tipo
+        $address = $pickup['address'] ?? $pickup['location'] ?? $pickup['full_address'] ?? '';
+        
+        // Si no hay dirección, construir una basada en el nombre y tipo
+        if (empty($address)) {
+            $address = $name . ' (' . $type . ')';
+        }
+        
+        return [
+            'id' => $id,
+            'uuid' => $id,
+            'name' => $name,
+            'type' => $type,
+            'address' => $address,
+            'description' => $pickup['description'] ?? $type . ' pickup',
+            'latitude' => $pickup['latitude'] ?? null,
+            'longitude' => $pickup['longitude'] ?? null,
+            'time' => $pickup['time'] ?? $pickup['pickup_time'] ?? null,
+            'tags' => $pickup['tags'] ?? [],
+            'notes' => $pickup['notes'] ?? ''
+        ];
+    }, $pickups);
+    
+    error_log('[MUSEMENT] ✅ ' . count($formatted_pickups) . ' pickups formateados');
+    
+    wp_send_json_success([
+        'pickups' => $formatted_pickups,
+        'count' => count($formatted_pickups)
+    ]);
+}
+
+
+// En ajax.php - Agregar este endpoint
+
+/**
+ * Endpoint para obtener preguntas de un producto
+ */
+add_action('wp_ajax_musement_get_product_questions', 'musement_ajax_get_product_questions');
+add_action('wp_ajax_nopriv_musement_get_product_questions', 'musement_ajax_get_product_questions');
+
+/**
+ * Endpoint para obtener preguntas de un producto
+ */
+add_action('wp_ajax_musement_get_product_questions', 'musement_ajax_get_product_questions');
+add_action('wp_ajax_nopriv_musement_get_product_questions', 'musement_ajax_get_product_questions');
+
+function musement_ajax_get_product_questions() {
+    check_ajax_referer('musement_ajax', 'nonce');
+    
+    $uuid = sanitize_text_field($_POST['uuid'] ?? '');
+    
+    if (!$uuid) {
+        wp_send_json_error(['message' => 'Falta el UUID del producto']);
+        return;
+    }
+    
+    $product = musement_remote_get_product($uuid);
+    
+    if (is_wp_error($product)) {
+        wp_send_json_error(['message' => $product->get_error_message()]);
+        return;
+    }
+    
+    $questions = [];
+    
+    // 🔥 Verificar si el producto tiene preguntas en la respuesta
+    if (!empty($product['questions']) && is_array($product['questions'])) {
+        foreach ($product['questions'] as $question) {
+            $questions[] = [
+                'id' => $question['id'] ?? uniqid('q_'),
+                'code' => $question['code'] ?? '',
+                'label' => $question['label'] ?? $question['question'] ?? 'Pregunta',
+                'type' => $question['type'] ?? 'text',
+                'required' => $question['required'] ?? false,
+                'options' => $question['options'] ?? [],
+                'placeholder' => $question['placeholder'] ?? ''
+            ];
+        }
+    }
+    
+    // 🔥 Si no hay preguntas pero el producto requiere información del pasajero
+    if (empty($questions) && !empty($product['has_passenger_info'])) {
+        error_log('[MUSEMENT] Generando preguntas para producto con has_passenger_info: ' . $uuid);
+        
+        // Generar preguntas basadas en el tipo de producto
+        $questions = [
+            [
+                'id' => 'full_name',
+                'code' => 'full_name',
+                'label' => 'Nombre completo del participante',
+                'type' => 'text',
+                'required' => true,
+                'placeholder' => 'Ej: Juan Pérez García'
+            ],
+            [
+                'id' => 'date_of_birth',
+                'code' => 'date_of_birth',
+                'label' => 'Fecha de nacimiento',
+                'type' => 'date',
+                'required' => true,
+                'placeholder' => 'DD/MM/YYYY'
+            ],
+            [
+                'id' => 'nationality',
+                'code' => 'nationality',
+                'label' => 'Nacionalidad',
+                'type' => 'select',
+                'required' => true,
+                'options' => ['Española', 'Francesa', 'Italiana', 'Alemana', 'Británica', 'Estadounidense', 'Griega', 'Otra'],
+                'placeholder' => 'Selecciona tu nacionalidad'
+            ],
+            [
+                'id' => 'passport',
+                'code' => 'passport_number',
+                'label' => 'Número de pasaporte o DNI',
+                'type' => 'text',
+                'required' => false,
+                'placeholder' => 'Ej: AB1234567'
+            ],
+            [
+                'id' => 'email',
+                'code' => 'email',
+                'label' => 'Correo electrónico (para enviar el audio tour)',
+                'type' => 'email',
+                'required' => true,
+                'placeholder' => 'ejemplo@correo.com'
+            ]
+        ];
+    }
+    
+    // 🔥 Si el producto tiene servicio de audioguía, añadir pregunta relacionada
+    if (!empty($product['services'])) {
+        foreach ($product['services'] as $service) {
+            if (($service['code'] ?? '') === 'audioguide') {
+                $questions[] = [
+                    'id' => 'audioguide_language',
+                    'code' => 'audioguide_language',
+                    'label' => 'Idioma para la audioguía',
+                    'type' => 'select',
+                    'required' => true,
+                    'options' => ['Español', 'Inglés', 'Francés', 'Alemán', 'Italiano'],
+                    'placeholder' => 'Selecciona el idioma de la audioguía'
+                ];
+                break;
+            }
+        }
+    }
+    
+    // 🔥 Si aún no hay preguntas, usar preguntas por defecto
+    if (empty($questions)) {
+        $questions = [
+            [
+                'id' => 'full_name',
+                'code' => 'full_name',
+                'label' => 'Nombre completo',
+                'type' => 'text',
+                'required' => true,
+                'placeholder' => 'Nombre y apellidos'
+            ],
+            [
+                'id' => 'date_of_birth',
+                'code' => 'date_of_birth',
+                'label' => 'Fecha de nacimiento',
+                'type' => 'date',
+                'required' => true,
+                'placeholder' => 'DD/MM/YYYY'
+            ]
+        ];
+    }
+    
+    wp_send_json_success([
+        'questions' => $questions,
+        'count' => count($questions),
+        'product_name' => $product['title'] ?? '',
+        'has_passenger_info' => $product['has_passenger_info'] ?? false
+    ]);
 }
 
 

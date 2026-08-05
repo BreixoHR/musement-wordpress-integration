@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Musement Integration
  * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 0.13.324
+ * Version: 0.13.438
  * Author: Jose Pablo Ibañez
  * Text Domain: musement-integration
  */
@@ -11,17 +11,36 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '0.13.324'); 
+define('MUSEMENT_INTEGRATION_VERSION', '0.13.438');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
 define('MUSEMENT_CLIENT_ID', '***');
 define('MUSEMENT_CLIENT_SECRET', '***');
+
+/**  CONTRASEÑAS DE SANDBOX ----------- MUSEMENT
+* define('MUSEMENT_APPLICATION', '***');
+* define('MUSEMENT_CLIENT_ID', '***');
+* define('MUSEMENT_CLIENT_SECRET', '***');
+ */
 define('MUSEMENT_STRIPE_PUBLISHABLE_KEY', '***');
 define('MUSEMENT_STRIPE_SECRET_KEY', '***');
 define('MUSEMENT_STRIPE_WEBHOOK_SECRET', '***');
 define('MUSEMENT_VENTRATA_ENDPOINT', 'https://tu-endpoint-salesforce.com/webhook');
 define('MUSEMENT_VENTRATA_API_KEY', '***');
+
+/**
+ * Fuerza que los error_log() de depuración queden guardados en un fichero
+ * propio del plugin, sin depender de que WP_DEBUG_LOG esté bien configurado
+ * en wp-config.php (que muchas veces no surte efecto si se define después de
+ * que WordPress ya arrancó). El fichero vive en wp-content/ para que
+ * sobreviva a actualizaciones del plugin.
+ */
+if (!defined('MUSEMENT_DEBUG_LOG_PATH')) {
+    define('MUSEMENT_DEBUG_LOG_PATH', WP_CONTENT_DIR . '/musement-debug.log');
+}
+ini_set('log_errors', '1');
+ini_set('error_log', MUSEMENT_DEBUG_LOG_PATH);
 
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/api.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/ajax.php';
@@ -35,13 +54,36 @@ require_once MUSEMENT_INTEGRATION_DIR . 'includes/payment-hosted.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/payment-stripe.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/checkout.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/admin/settings.php';
+require_once MUSEMENT_INTEGRATION_DIR . 'includes/admin/block-product.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/octo.php';
 require_once MUSEMENT_INTEGRATION_DIR . 'includes/pdf-merger.php';
+require_once MUSEMENT_INTEGRATION_DIR . 'includes/certification.php';
+require_once MUSEMENT_INTEGRATION_DIR . 'includes/certified_products.php';
+require_once MUSEMENT_INTEGRATION_DIR . 'includes/certified_calendar.php';
+
+
 
 
 
 register_activation_hook(__FILE__, 'musement_orders_install');
 register_activation_hook(__FILE__, 'musement_checkout_page_install');
+
+
+// Registrar shortcodes de certificación
+add_shortcode('musement_certification_cards', function() {
+    if (class_exists('Musement_Certification_Unified')) {
+        return Musement_Certification_Unified::render_cards_shortcode();
+    }
+    return '<p>Error: La clase de certificación no está disponible.</p>';
+});
+
+// También mantener el shortcode original de demo si existe
+add_shortcode('musement_certification_demo', function() {
+    if (class_exists('Musement_Certification_Unified')) {
+        return Musement_Certification_Unified::render_frontend_shortcode();
+    }
+    return '<p>Error: La clase de certificación no está disponible.</p>';
+});
 
 function musement_integration_shortcode($atts): string
 {
@@ -205,27 +247,154 @@ add_action('wp_ajax_musement_create_order', 'musement_create_order');
 add_action('wp_ajax_nopriv_musement_create_order', 'musement_create_order');
 
 function musement_create_order() {
+
+
     check_ajax_referer('musement_ajax', 'nonce');
     $cart_uuid = sanitize_text_field($_POST['cart_uuid'] ?? '');
+    $payment_intent_id = sanitize_text_field($_POST['payment_intent_id'] ?? '');
+
+    if (!$cart_uuid) {
+        wp_send_json_error([
+            'message' => 'No se encontró el carrito',
+            'debug' => 'cart_uuid is empty'
+        ]);
+        return;
+    }
+
+    // Idempotencia: si esta misma compra (mismo cart_uuid) ya se está procesando
+    // o ya se procesó (doble clic, reintento de red, dos peticiones simultáneas,
+    // etc.), no volvemos a crear la reserva en Musement -- eso generaba
+    // bookings/vouchers duplicados para un único carrito.
+    $order_lock_key = 'musement_order_lock_' . md5($cart_uuid);
+    $mysql_lock_name = 'musement_order_' . md5($cart_uuid);
+
+    if (!musement_order_lock_acquire($mysql_lock_name)) {
+        wp_send_json_error([
+            'message' => 'Tu reserva ya se está procesando, espera unos segundos.',
+        ], 409);
+        return;
+    }
+
+    // Si otra petición para este mismo carrito ya terminó de crear la orden,
+    // devolvemos ese mismo resultado en vez de crear otra reserva duplicada.
+    $existing_result = get_transient($order_lock_key);
+
+    if (is_array($existing_result)) {
+        musement_order_lock_release($mysql_lock_name);
+        wp_send_json_success($existing_result);
+        return;
+    }
 
     // Recogemos del formulario los datos del cliente
     $customer_data = [
         'first_name' => sanitize_text_field($_POST['first_name'] ?? ''),
         'last_name' => sanitize_text_field($_POST['last_name'] ?? ''),
         'email' => sanitize_email($_POST['email'] ?? ''),
-        'phone' => sanitize_text_field($_POST['phone'] ?? ''),
+    ];
+    
+    // 🔥 OBTENER PREGUNTAS DEL CARRITO
+    $cart = musement_cart_payload();
+    $items = $cart['items'] ?? [];
+    $summary = $cart['summary'] ?? ['total' => 0, 'currency' => 'EUR'];
+    
+    // 🔥 VERIFICAR QUE EL CARRITO NO ESTÁ VACÍO
+    if (empty($items)) {
+        delete_transient($order_lock_key);
+        musement_order_lock_release($mysql_lock_name);
+        wp_send_json_error([
+            'message' => 'El carrito está vacío',
+            'debug' => 'No hay items en el carrito'
+        ]);
+        return;
+    }
+
+    if (empty($customer_data['email'])) {
+        delete_transient($order_lock_key);
+        musement_order_lock_release($mysql_lock_name);
+        wp_send_json_error([
+            'message' => 'El email es obligatorio',
+            'debug' => 'Email is empty'
+        ]);
+        return;
+    }
+
+    $remote_sync = musement_remote_cart_sync_from_local();
+    if (is_wp_error($remote_sync)) {
+        delete_transient($order_lock_key);
+        musement_order_lock_release($mysql_lock_name);
+        wp_send_json_error([
+            'message' => $remote_sync->get_error_message(),
+            'remote_error' => $remote_sync->get_error_data(),
+        ], 502);
+        return;
+    }
+
+    $cart_uuid = musement_remote_cart_get_id() ?: $cart_uuid;
+    
+
+    $customer_update = musement_remote_cart_update_customer($customer_data);
+    if (!$customer_update) {
+        // No fallamos aquí, solo logueamos
+        error_log('[MUSEMENT] ⚠️ Could not update customer data in remote cart');
+    }
+
+    // Recogemos del formulario los datos del cliente
+    $customer_data = [
+        'first_name' => sanitize_text_field($_POST['first_name'] ?? ''),
+        'last_name' => sanitize_text_field($_POST['last_name'] ?? ''),
+        'email' => sanitize_email($_POST['email'] ?? ''),
     ];
 
-    // 1. Crear la orden en Musement (estado PENDING)
-    //    Esto es exactamente lo que ya haces.
-    $order = musement_remote_create_order($cart_uuid);
+    // Verificamos el pago DIRECTAMENTE contra Stripe antes de crear u homologar
+    // ninguna reserva en Musement. Antes de esto, cualquiera podía llamar a este
+    // endpoint (es wp_ajax_nopriv) con un cart_uuid válido y conseguir una reserva
+    // confirmada con vouchers sin haber pagado nunca -- este check es lo que lo impide.
+    $payment_check = musement_stripe_verify_payment_for_cart(
+        $payment_intent_id,
+        $cart_uuid,
+        (float) ($summary['total'] ?? 0),
+        (string) ($summary['currency'] ?? 'EUR')
+    );
+
+    if (is_wp_error($payment_check)) {
+        delete_transient($order_lock_key);
+        musement_order_lock_release($mysql_lock_name);
+        error_log('[MUSEMENT] ❌ Pago no verificado para carrito ' . $cart_uuid . ': ' . $payment_check->get_error_message());
+        wp_send_json_error([
+            'message' => $payment_check->get_error_message(),
+        ], 402);
+        return;
+    }
+
+    // 1. Crear la orden en Musement (estado PENDING) -- o recuperar la que ya se
+    //    creó en un intento anterior para este mismo carrito. Si no hiciéramos esto,
+    //    un fallo DESPUÉS de crear la orden (p.ej. al pedir su detalle o construir el
+    //    payload) haría que un reintento volviera a llamar a musement_remote_create_order(),
+    //    y Musement no rechaza la repetición: le añade más bookings a la misma orden.
+    $order_created_key = 'musement_order_created_' . md5($cart_uuid);
+    $existing_order_uuid = get_transient($order_created_key);
+
+    $order = $existing_order_uuid
+        ? musement_remote_get_order($existing_order_uuid)
+        : musement_remote_create_order($cart_uuid);
 
     if (is_wp_error($order)) {
+        delete_transient($order_lock_key);
+        musement_order_lock_release($mysql_lock_name);
         wp_send_json_error(['message' => $order->get_error_message()]);
+        return;
     }
 
     // 2. PASO NUEVO: ¡Ya tenemos el pago! Avisamos a Musement.
     $order_uuid = $order['uuid'] ?? '';
+
+    // Guardamos el order_uuid en cuanto lo tenemos -- antes de marcar el pago, pedir
+    // el detalle o construir el payload -- para que si algo falla a partir de aquí,
+    // el siguiente intento reutilice esta orden en vez de crear otra.
+    if ($order_uuid) {
+        set_transient($order_created_key, $order_uuid, 12 * HOUR_IN_SECONDS);
+    }
+
     $vouchers = [];
     $voucher_urls = [];
 
@@ -267,15 +436,23 @@ function musement_create_order() {
         }
     }
 
-    // Limpiar carrito y devolver respuesta.
-    musement_cart_clear();
-    wp_send_json_success([
+    $response_data = [
         'order' => $order,
         'octo_payload' => $octo_payload ?? null,
         'vouchers' => $vouchers,
         'order_uuid' => $order_uuid,
-        'customer_data' => $customer_data 
-    ]);
+        'customer_data' => $customer_data
+    ];
+
+    // Guardamos el resultado para esta compra: si llega otra petición con el
+    // mismo cart_uuid (doble clic, reintento, etc.) se le devuelve esta misma
+    // respuesta en vez de crear otra reserva/booking duplicado en Musement.
+    set_transient($order_lock_key, $response_data, HOUR_IN_SECONDS);
+    musement_order_lock_release($mysql_lock_name);
+
+    // Limpiar carrito y devolver respuesta.
+    musement_cart_clear();
+    wp_send_json_success($response_data);
 }
 
 // Endpoint para consultar estado de orden desde el frontend
@@ -340,7 +517,68 @@ function musement_check_order_status() {
     ]);
 }
 
+/**
+ * Inyectar el calendario dentro del div #secundary
+ */
+add_action('wp_footer', 'musement_inject_calendar_in_secundary', 100);
 
+function musement_inject_calendar_in_secundary() {
+    // Solo en páginas individuales
+    if (!is_singular()) {
+        return;
+    }
+    
+    // Determinar qué producto mostrar
+    $product = 'pompidou'; // Por defecto
+    
+    // Detectar automáticamente por el título o slug
+    $post = get_post();
+    $title = strtolower($post->post_title);
+    $slug = $post->post_name;
+    
+    if (strpos($title, 'knossos') !== false || strpos($slug, 'knossos') !== false) {
+        $product = 'knossos';
+    } elseif (strpos($title, 'pompidou') !== false || strpos($slug, 'pompidou') !== false) {
+        $product = 'pompidou';
+    }
+    
+    // Generar el HTML del calendario
+    $calendar_html = do_shortcode('[musement_certified_calendar product="knosos"]');
+    
+    ?>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var secundary = document.getElementById('secundary');
+        if (secundary) {
+            // Buscar si ya hay un div para el calendario
+            var calendarDiv = secundary.querySelector('.musement-sidebar-calendar');
+            
+            if (!calendarDiv) {
+                // Crear el contenedor para el calendario
+                var wrapper = document.createElement('div');
+                wrapper.className = 'musement-calendar-wrapper';
+                wrapper.style.margin = '10px 0';
+                
+                // Insertar después del span .custom_precio
+                var precioSpan = secundary.querySelector('.custom_precio');
+                if (precioSpan && precioSpan.nextSibling) {
+                    secundary.insertBefore(wrapper, precioSpan.nextSibling);
+                } else {
+                    secundary.insertBefore(wrapper, secundary.firstChild);
+                }
+                
+                // Insertar el HTML del calendario
+                
+                // Re-inicializar Flatpickr si es necesario
+                if (typeof flatpickr !== 'undefined') {
+                    document.dispatchEvent(new Event('DOMContentLoaded'));
+                }
+            }
+        }
+    });
+    </script>
+    <?php
+}
 
 add_action('plugins_loaded', 'musement_checkout_page_maybe_update_title', 20);
 

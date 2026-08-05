@@ -17,6 +17,374 @@
         });
     }
 
+    // ============================================================
+    // NUEVAS FUNCIONES PARA SEPARAR BOOKINGS POR CARACTERÍSTICAS
+    // ============================================================
+
+    /**
+     * Genera un ID único
+     */
+    function generateId(prefix) {
+        return (prefix || 'id') + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    }
+
+    /**
+     * Normaliza un contacto
+     */
+    function normalizeContact(contact) {
+        if (!contact || typeof contact !== 'object') return null;
+        
+        return {
+            firstName: contact.firstName || contact.first_name || '',
+            lastName: contact.lastName || contact.last_name || '',
+            fullName: contact.fullName || contact.full_name || '',
+            emailAddress: contact.emailAddress || contact.email || contact.email_address || '',
+            phoneNumber: contact.phoneNumber || contact.phone || contact.phone_number || '',
+            country: contact.country || 'ES',
+            language: contact.language || 'es'
+        };
+    }
+
+    /**
+     * Normaliza el pricing
+     */
+    function normalizePricing(pricing) {
+        if (!pricing || typeof pricing !== 'object') {
+            return { original: 0, retail: 0, currency: 'EUR' };
+        }
+        
+        return {
+            original: parseFloat(pricing.original || pricing.value || pricing.retail || 0),
+            retail: parseFloat(pricing.retail || pricing.value || pricing.original || 0),
+            currency: pricing.currency || 'EUR'
+        };
+    }
+
+    /**
+     * Normaliza un unit item
+     */
+    function normalizeUnitItem(unit) {
+        if (!unit || typeof unit !== 'object') return null;
+        
+        return {
+            id: unit.id || generateId('unit'),
+            unitId: unit.unitId || unit.unit_id || unit.id,
+            unitType: unit.unitType || unit.unit_type || 'ADULT',
+            unitName: unit.unitName || unit.unit_name || unit.unit_type || 'Adulto',
+            quantity: parseInt(unit.quantity || 1, 10),
+            contact: normalizeContact(unit.contact),
+            pricing: normalizePricing(unit.pricing || unit.price)
+        };
+    }
+
+    /**
+     * Normaliza un booking para asegurar estructura consistente
+     */
+    function normalizeBooking(booking) {
+        if (!booking || typeof booking !== 'object') return null;
+        
+        return {
+            id: booking.id || generateId('booking'),
+            productId: booking.productId || booking.product_id || booking.product_identifier || '',
+            productName: booking.productName || booking.product_name || booking.title || 'Actividad',
+            optionId: booking.optionId || booking.option_id || 'tour',
+            optionType: booking.optionType || booking.option_type || 'tour',
+            status: booking.status || 'CONFIRMED',
+            localDateTimeStart: booking.localDateTimeStart || booking.date || booking.local_date_time_start,
+            localDateTimeEnd: booking.localDateTimeEnd || booking.end_date || booking.local_date_time_end,
+            timezone: booking.timezone || 'Europe/Madrid',
+            language: booking.language || booking.language_code || 'es',
+            unitItems: Array.isArray(booking.unitItems) 
+                ? booking.unitItems.map(normalizeUnitItem).filter(function(u) { return u !== null; })
+                : [],
+            contact: normalizeContact(booking.contact || booking.customer_data),
+            pricing: normalizePricing(booking.pricing || booking.price),
+            metadata: booking.metadata || {},
+            extras: booking.extras || [],
+            questions: booking.questions || []
+        };
+    }
+
+    /**
+     * 🔑 Genera una clave única para un booking basado en sus características
+     * Cada combinación única = un booking separado
+     */
+    function generateBookingKey(booking) {
+        var date = booking.localDateTimeStart ? booking.localDateTimeStart.split('T')[0] : 'unknown';
+        var productId = booking.productId || 'unknown';
+        var optionId = booking.optionId || 'tour';
+        var optionType = booking.optionType || '';
+        var language = booking.language || 'es';
+        
+        // Características que definen un booking único
+        var components = [
+            date,
+            productId,
+            optionId,
+            optionType,
+            language
+        ];
+        
+        // Filtrar vacíos y unir
+        return components.filter(function(c) { 
+            return c && c.length > 0; 
+        }).join('|');
+    }
+
+    /**
+     * 🔥 SEPARA BOOKINGS POR COMBINACIONES ÚNICAS
+     * Esta es la función principal que reemplaza a groupBookingsByDate
+     */
+    function separateBookingsByUniqueCombination(bookings) {
+        // Validar entrada
+        if (!bookings || !Array.isArray(bookings) || bookings.length === 0) {
+            console.warn('⚠️ No hay bookings para separar');
+            return [];
+        }
+        
+        // Normalizar bookings
+        var normalizedBookings = [];
+        bookings.forEach(function(b) {
+            var normalized = normalizeBooking(b);
+            if (normalized !== null && normalized.localDateTimeStart) {
+                normalizedBookings.push(normalized);
+            }
+        });
+        
+        if (normalizedBookings.length === 0) {
+            console.warn('⚠️ No se encontraron bookings válidos');
+            return [];
+        }
+        
+        // Agrupar por combinación única
+        var grouped = {};
+        
+        normalizedBookings.forEach(function(booking) {
+            var key = generateBookingKey(booking);
+            
+            if (!grouped[key]) {
+                grouped[key] = {
+                    key: key,
+                    date: booking.localDateTimeStart.split('T')[0],
+                    productId: booking.productId,
+                    productName: booking.productName,
+                    optionId: booking.optionId,
+                    optionType: booking.optionType,
+                    language: booking.language || 'es',
+                    bookings: [],
+                    unitItems: [],
+                    totalOriginal: 0,
+                    totalRetail: 0,
+                    currency: booking.pricing.currency || 'EUR',
+                    contact: booking.contact
+                };
+            }
+            
+            // Agregar booking al grupo
+            grouped[key].bookings.push(booking);
+            grouped[key].totalOriginal += booking.pricing.original || 0;
+            grouped[key].totalRetail += booking.pricing.retail || 0;
+            
+            // Fusionar unitItems (sumar cantidades del mismo tipo)
+            booking.unitItems.forEach(function(unit) {
+                var existingUnit = null;
+                for (var i = 0; i < grouped[key].unitItems.length; i++) {
+                    if (grouped[key].unitItems[i].unitType === unit.unitType) {
+                        existingUnit = grouped[key].unitItems[i];
+                        break;
+                    }
+                }
+                
+                if (existingUnit) {
+                    existingUnit.quantity += unit.quantity;
+                    existingUnit.pricing.original += unit.pricing.original;
+                    existingUnit.pricing.retail += unit.pricing.retail;
+                } else {
+                    grouped[key].unitItems.push({
+                        unitType: unit.unitType,
+                        unitName: unit.unitName,
+                        quantity: unit.quantity,
+                        pricing: {
+                            original: unit.pricing.original,
+                            retail: unit.pricing.retail,
+                            currency: unit.pricing.currency || 'EUR'
+                        },
+                        contact: unit.contact || booking.contact
+                    });
+                }
+            });
+        });
+        
+        // Convertir a array y ordenar
+        var keys = Object.keys(grouped).sort();
+        var result = [];
+        
+        keys.forEach(function(key) {
+            var group = grouped[key];
+            
+            // Construir booking consolidado
+            var firstBooking = group.bookings[0] || {};
+            var consolidatedBooking = {
+                id: generateId('booking'),
+                productId: group.productId,
+                productName: group.productName || 'Actividad',
+                optionId: group.optionId || 'tour',
+                optionType: group.optionType || 'tour',
+                status: 'CONFIRMED',
+                localDateTimeStart: firstBooking.localDateTimeStart || group.date + 'T00:00:00+00:00',
+                localDateTimeEnd: firstBooking.localDateTimeEnd || group.date + 'T23:59:59+00:00',
+                timezone: firstBooking.timezone || 'Europe/Madrid',
+                language: group.language,
+                unitItems: group.unitItems,
+                contact: group.contact || firstBooking.contact,
+                pricing: {
+                    original: group.totalOriginal,
+                    retail: group.totalRetail,
+                    currency: group.currency
+                },
+                metadata: {
+                    grouped: true,
+                    original_bookings: group.bookings.length,
+                    characteristics: {
+                        date: group.date,
+                        product: group.productId,
+                        option: group.optionId,
+                        language: group.language
+                    }
+                }
+            };
+            
+            result.push({
+                key: key,
+                date: group.date,
+                productId: group.productId,
+                productName: group.productName,
+                optionId: group.optionId,
+                language: group.language,
+                booking: consolidatedBooking,
+                summary: {
+                    total_original: group.totalOriginal,
+                    total_retail: group.totalRetail,
+                    currency: group.currency,
+                    count: group.bookings.length,
+                    unit_types: group.unitItems.length
+                }
+            });
+        });
+        
+        // Log detallado
+        console.log('📊 Bookings separados por combinación única:');
+        result.forEach(function(item, index) {
+            console.log('  ' + (index + 1) + '. 📆 ' + item.date + ' | ' + item.productName + ' | ' + item.optionId + ' | ' + item.language);
+            console.log('     - ' + item.summary.count + ' booking(s) originales consolidados');
+            console.log('     - ' + item.summary.unit_types + ' tipo(s) de unidad');
+            console.log('     - Total: ' + item.summary.total_retail + ' ' + item.summary.currency);
+        });
+        
+        return result;
+    }
+
+    /**
+     * Construye la sección de documentos
+     */
+    function buildDocuments(vouchers, tickets, mergedPdfUrl) {
+        var documents = {
+            vouchers: (vouchers || []).map(function(v) {
+                return {
+                    activity_name: v.activity_name || 'Actividad',
+                    url: v.url,
+                    type: "voucher",
+                    booking_id: v.booking_id || null
+                };
+            })
+        };
+
+        // Salesforce recibe solo la URL de descarga del PDF fusionado, no su
+        // contenido -- no hace falta (ni conviene) mandar el PDF en base64 aquí.
+        if (mergedPdfUrl) {
+            documents.merged_voucher = {
+                url: mergedPdfUrl,
+                type: "merged_voucher",
+                count: (vouchers || []).length,
+                description: "Todos los vouchers fusionados en un solo PDF"
+            };
+        }
+        
+        if (tickets && tickets.length > 0) {
+            documents.tickets = tickets.map(function(t) {
+                return {
+                    activity_name: t.activity_name || 'Actividad',
+                    ticket_id: t.ticket_id,
+                    url: t.url,
+                    type: "ticket",
+                    booking_id: t.booking_id || null
+                };
+            });
+        }
+        
+        return documents;
+    }
+
+    /**
+     * Normaliza la orden con bookings separados
+     */
+    function normalizeOrderWithSeparatedBookings(orderData, separatedBookings) {
+        if (!orderData || typeof orderData !== 'object') {
+            return {
+                id: generateId('order'),
+                supplierReference: generateId('ref'),
+                status: "CONFIRMED",
+                utcCreatedAt: new Date().toISOString(),
+                utcUpdatedAt: new Date().toISOString(),
+                bookings: [],
+                pricing: { original: 0, retail: 0, currency: 'EUR' }
+            };
+        }
+        
+        var totalOriginal = 0;
+        var totalRetail = 0;
+        var currency = 'EUR';
+        
+        separatedBookings.forEach(function(item) {
+            totalOriginal += (item.summary.total_original || 0);
+            totalRetail += (item.summary.total_retail || 0);
+            if (item.summary.currency) {
+                currency = item.summary.currency;
+            }
+        });
+        
+        var firstBooking = separatedBookings.length > 0 ? separatedBookings[0].booking : null;
+        var contact = firstBooking ? firstBooking.contact : normalizeContact(orderData.contact);
+        
+        return {
+            id: orderData.id || orderData.order_uuid || generateId('order'),
+            supplierReference: orderData.supplierReference || orderData.identifier || orderData.id || generateId('ref'),
+            status: orderData.status || "CONFIRMED",
+            utcCreatedAt: orderData.utcCreatedAt || orderData.created_at || new Date().toISOString(),
+            utcUpdatedAt: orderData.utcUpdatedAt || orderData.updated_at || new Date().toISOString(),
+            contact: contact,
+            pricing: {
+                original: totalOriginal,
+                retail: totalRetail,
+                currency: currency,
+                breakdown: {
+                    subtotal: totalRetail,
+                    taxes: 0,
+                    discount: 0,
+                    total: totalRetail
+                }
+            },
+            bookings: separatedBookings.map(function(item) { 
+                return item.booking.id; 
+            })
+        };
+    }
+
+    // ============================================================
+    // FIN DE LAS NUEVAS FUNCIONES
+    // ============================================================
+    
+
     function setStatus(widget, message, isError) {
         const status = widget.querySelector('.musement-widget__status');
         status.textContent = message || '';
@@ -1157,37 +1525,36 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                 console.log('═══════════════════════════════════════════════════════════');
 
                 let mergedPdfUrl = null;
-                let mergedPdfPath = null;
-
 
                 if (result.success && result.data.merged_pdf) {
+                    // Solo nos interesa la URL publica de descarga; el payload que
+                    // recibe Salesforce no lleva el PDF fusionado, solo su enlace.
                     mergedPdfUrl = result.data.merged_pdf;
-                    mergedPdfPath = result.data.merged_pdf_path;
-                    mergedPdfBase64 = result.data.merged_pdf_base64;
-
-                    const finalPayload = buildFinalPayload(
-                        vouchers, 
-                        tickets, 
-                        orderData, 
-                        mergedPdfUrl,
-                        mergedPdfPath,
-                        mergedPdfBase64
-                    );
-                    sendPayloadToEndpoint(finalPayload);
-                    
-                    console.log('═══════════════════════════════════════════════════════════');
-                    console.log('📦 PAYLOAD FINAL CON PDF FUSIONADO');
-                    console.log('═══════════════════════════════════════════════════════════');
-                    console.log(JSON.stringify(finalPayload, null, 2));
-                    console.log('═══════════════════════════════════════════════════════════');
 
                     console.log('✅ PDF fusionado correctamente:', result.data.merged_pdf);
-                    // Actualizar el payload con el PDF fusionado
-                    // updatePayloadWithMergedPdf(result.data.merged_pdf, vouchers, tickets, orderData);
                 } else {
-                    console.warn('⚠️ No se pudo fusionar, usando vouchers individuales');
-                    // sendPayloadWithoutMerge(vouchers, tickets, orderData);
+                    // La fusión falló (p.ej. FPDI no disponible, algún voucher no se pudo
+                    // descargar). Antes esto se quedaba aquí sin hacer nada más -- la
+                    // reserva jamás llegaba a Salesforce. Ahora se manda igualmente el
+                    // payload con las URLs de cada voucher/ticket individual (sin PDF
+                    // fusionado) para no perder el aviso.
+                    console.warn('⚠️ No se pudo fusionar, se enviarán los vouchers/tickets individuales');
                 }
+
+                const finalPayload = buildFinalPayload(
+                    vouchers,
+                    tickets,
+                    orderData,
+                    mergedPdfUrl
+                );
+                sendPayloadToEndpoint(finalPayload);
+
+                console.log('═══════════════════════════════════════════════════════════');
+                console.log('📦 PAYLOAD FINAL ENVIADO A SALESFORCE');
+                console.log('═══════════════════════════════════════════════════════════');
+                console.log(JSON.stringify(finalPayload, null, 2));
+                console.log('🆔 ORDER UUID (para el agente de certificación de Musement): ' + orderUuid);
+                console.log('═══════════════════════════════════════════════════════════');
             })
         }
         
@@ -1202,25 +1569,18 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
 
     function sendPayloadToEndpoint(payload) {
         console.log('📤 Enviando payload a endpoint...');
-        
-        // 🔥 Si hay un PDF fusionado, enviarlo como FormData
-        if (payload.documents.merged_voucher && payload.documents.merged_voucher.path) {
-            // Opción 1: Enviar solo el PDF (recomendado)
-            sendPdfAsFormData(payload.documents.merged_voucher.path, payload);
-            
-            // Opción 2: Enviar el payload completo como JSON + PDF
-            // sendFullPayloadAsFormData(payload);
-        } else {
-            // Sin PDF, enviar solo JSON
-            // sendJsonPayload(payload);
-        }
+
+        // Se manda siempre, tenga o no PDF fusionado: aunque no haya merged_voucher,
+        // el payload sigue llevando las URLs de cada voucher/ticket individual y eso
+        // ya es suficiente para que Salesforce pueda descargar las entradas.
+        sendPdfAsFormData(payload);
     }
 
     /**
-     * Envía el PDF como FormData a tu endpoint
+     * Envía el payload (con las URLs de descarga) a Salesforce a través del backend
      */
-    function sendPdfAsFormData(pdfPath, payload) {
-        console.log('📤 Enviando PDF desde el backend...');
+    function sendPdfAsFormData(payload) {
+        console.log('📤 Enviando peticion a salesforce desde el backend...');
     
         // 🔥 En lugar de enviar el PDF directamente, pedimos al backend que lo envíe
         fetch(MUSEMENT.ajax, {
@@ -1230,16 +1590,18 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                 action: 'musement_send_pdf_to_endpoint',
                 nonce: MUSEMENT.nonce,
                 order_uuid: orderUuid,
-                endpoint_url: 'http://localhost:8777/test',
+                endpoint_url: 'https://example.my.salesforce-sites.com/services/apexrest/Booking/Ventrata',
                 payload: JSON.stringify(payload)
             })
         })
         .then(r => r.json())
         .then(result => {
+            console.log( " INTENTO DE ENVIO ", result );
             if (result.success) {
                 console.log('✅ PDF enviado desde el backend:', result.data);
             } else {
-                console.error('❌ Error enviando PDF:', result.data?.message);
+                console.error('❌ Error enviando peticion a salesforce como formData:', result.data?.message);
+                console.error('❌ Error resultado completo de la respueta:', result);
             }
         })
         .catch(error => {
@@ -1250,57 +1612,33 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
     /**
      * Construye el payload final con o sin PDF fusionado
      */
-    function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl, mergedPdfPath,mergedPdfBase64) {
-        const payload = {
-            webhook: {
-                id: "5ec5abc7-6a49-4aa5-930b-3dfb9cbb9123",
-                event: "order_update_final",
-                url: "",
-                retryOnError: true,
-                useContactLanguage: true,
-                capabilities: ["octo/cart", "octo/questions", "octo/extras", "ventrata/dashboard"]
-            },
-            bookings: octoPayload?.order?.bookings || "esto es una prueba de rendimiento.",
-            order: orderData || {
-                id: orderUuid,
-                supplierReference: bookingRef,
-                status: "CONFIRMED",
-                utcCreatedAt: new Date().toISOString(),
-                utcUpdatedAt: new Date().toISOString()
-            },
-            documents: {
-                // 📄 PDF FUSIONADO (si existe)
-                ...(mergedPdfUrl && {
-                    merged_voucher: {
-                        url: mergedPdfUrl,
-                        path: mergedPdfPath,
-                        type: "merged_voucher",
-                        count: vouchers.length,
-                        description: "Todos los vouchers fusionados en un solo PDF",
-                        base64: mergedPdfBase64
-                    }
-                }),
-                // Vouchers individuales (siempre presentes)
-                vouchers: vouchers.map(v => ({
-                    activity_name: v.activity_name,
-                    url: v.url,
-                    type: "voucher"
-                })),
-                // Tickets (si existen)
-                ...(tickets.length > 0 && {
-                    tickets: tickets.map(t => ({
-                        activity_name: t.activity_name,
-                        ticket_id: t.ticket_id,
-                        url: t.url,
-                        type: "ticket"
-                    }))
-                })
-            },
-            timestamp: new Date().toISOString()
-        };
-        
-        return payload;
-    }
+    /**
+ * 🔥 CONSTRUYE EL PAYLOAD FINAL CON BOOKINGS SEPARADOS POR CARACTERÍSTICAS
+ * Esta función reemplaza a la anterior y usa la lógica de separación
+ */
+function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
+    console.log('🏗️ Construyendo payload final para Salesforce...');
+
+    // octoPayload ya viene del servidor (musement_build_octo_payload() en
+    // payments.php) en formato OCTO, con order.bookings como un booking
+    // independiente por cada reserva real de Musement -- una fecha/producto/
+    // opción distinta ya es un booking distinto, sin que el cliente tenga que
+    // volver a agruparlos ni tocar su forma. Antes esta función reconstruía
+    // el payload a mano (fusionando bookings, moviendo "bookings" fuera de
+    // "order", sustituyendo cada booking por su solo ID); era un parche para
+    // el bug de triplicado que ya está arreglado en el servidor, y de paso
+    // generaba un formato no estándar que Salesforce no podía interpretar.
+    var payload = (typeof octoPayload !== 'undefined' && octoPayload && octoPayload.order)
+        ? JSON.parse(JSON.stringify(octoPayload))
+        : { webhook: {}, order: { bookings: [] } };
+
+    payload.documents = buildDocuments(vouchers, tickets, mergedPdfUrl);
+    payload.timestamp = new Date().toISOString();
+
+    console.log('📦 Bookings en el payload final:', (payload.order.bookings || []).length);
+
+    return payload;
+}
     
     function checkDocuments() {
         attempts++;
@@ -1437,16 +1775,17 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                 status.textContent = 'Confirmando pago...';
                 submit.disabled = true;
 
-                function createMusementOrderAfterPayment(checkout, cartUuid) {
+                function createMusementOrderAfterPayment(checkout, cartUuid, paymentIntentId) {
                     const form = checkout.querySelector('.musement-checkout__form');
                     const formData = new FormData(form);
                     const firstName = formData.get('first_name') || '';
                     const lastName = formData.get('last_name') || '';
                     const email = formData.get('email') || '';
                     const phone = formData.get('phone') || '';
-                    
+
                     return post('musement_create_order', {
                         cart_uuid: cartUuid,
+                        payment_intent_id: paymentIntentId,
                         first_name: firstName,
                         last_name: lastName,
                         email: email,
@@ -1466,8 +1805,8 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                     if (!cartUuid) {
                         throw new Error('No se encontró el carrito');
                     }
-                    
-                    return createMusementOrderAfterPayment(checkout, cartUuid);
+
+                    return createMusementOrderAfterPayment(checkout, cartUuid, intent.id);
                     
                 }).then(function (orderData){
                     const order = orderData.order || orderData;
@@ -1489,11 +1828,19 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                     
                     console.log('✅ Reserva creada:', { bookingRef, vouchers, orderUuid });
                     
+                    // Muestra los enlaces de descarga en el checkout. Ya NO envía nada a
+                    // Salesforce aquí: eso lo hace siempre startVoucherMonitoring() más abajo,
+                    // por el único camino que de verdad llega a Salesforce (fusión de vouchers +
+                    // musement_send_pdf_to_endpoint). Antes, cuando el voucher llegaba al
+                    // instante, esta función mandaba el aviso por musement_send_octo_with_vouchers,
+                    // que apuntaba a MUSEMENT_VENTRATA_ENDPOINT -- una URL de relleno
+                    // ("tu-endpoint-salesforce.com") que nunca se configuró y fallaba siempre en
+                    // silencio, así que esas reservas nunca llegaban a Salesforce.
                     function displayVouchers(voucherList) {
                         let vouchersHtml = '<div class="musement-vouchers" style="margin-top: 16px; padding: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">';
                         vouchersHtml += '<h4 style="margin: 0 0 8px 0; color: #166534;">📄 Tus entradas/vouchers:</h4>';
                         vouchersHtml += '<ul style="margin: 0; padding-left: 20px;">';
-                        
+
                         voucherList.forEach(function(voucher) {
                             if (voucher.url) {
                                 const activityName = voucher.activity_name || 'Actividad';
@@ -1504,9 +1851,9 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                                 </li>`;
                             }
                         });
-                        
+
                         vouchersHtml += '</ul></div>';
-                        
+
                         let vouchersContainer = checkout.querySelector('.musement-checkout__vouchers');
                         if (!vouchersContainer) {
                             vouchersContainer = document.createElement('div');
@@ -1514,51 +1861,33 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                             status.insertAdjacentElement('afterend', vouchersContainer);
                         }
                         vouchersContainer.innerHTML = vouchersHtml;
-                        fetch(MUSEMENT.ajax, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                            body: new URLSearchParams({
-                                action: 'musement_send_octo_with_vouchers',
-                                nonce: MUSEMENT.nonce,
-                                order_uuid: orderUuid,
-                                first_name: customerData?.first_name || '',
-                                last_name: customerData?.last_name || '',
-                                email: customerData?.email || '',
-                                phone: customerData?.phone || ''
-                            })
-                        }).then(r => r.json())
-                        .then(result => {
-                            if (result.success) {
-                                console.log('📤 OCTO enviado correctamente');
-                            } else {
-                                console.warn('⚠️ OCTO no enviado:', result.data?.message);
-                            }
-                        });
                     }
-                    
+
+                    const orderDataCompleto = {
+                        id: orderUuid,
+                        testMode: false,
+                        supplierReference: bookingRef,
+                        status: "CONFIRMED",
+                        utcCreatedAt: orderData.utcCreatedAt || new Date().toISOString(),
+                        utcUpdatedAt: orderData.utcUpdatedAt || new Date().toISOString(),
+                        bookings: orderData.order?.bookings || orderData.bookings || [],
+                        contact: orderData.order?.contact || orderData.contact || customerData,
+                        pricing: orderData.order?.pricing || orderData.pricing || { original: 0, retail: 0, currency: "EUR" }
+                    };
+
                     if (vouchers && vouchers.length > 0) {
                         status.textContent = `✅ ¡Reserva confirmada! Nº: ${bookingRef.substring(0, 8)}... Puedes descargar tus vouchers:`;
                         displayVouchers(vouchers);
-                        
-                        setTimeout(function() {
-                        // window.location.href = MUSEMENT.checkoutUrl + '?reserva=' + bookingRef + '&status=success';
-                        }, 10000);
                     } else {
-
-                        const orderDataCompleto = {
-                            id: orderUuid,
-                            testMode: false,
-                            supplierReference: bookingRef,
-                            status: "CONFIRMED",
-                            utcCreatedAt: orderData.utcCreatedAt || new Date().toISOString(),
-                            utcUpdatedAt: orderData.utcUpdatedAt || new Date().toISOString(),
-                            bookings: orderData.order?.bookings || orderData.bookings || [],
-                            contact: orderData.order?.contact || orderData.contact || customerData,
-                            pricing: orderData.order?.pricing || orderData.pricing || { original: 0, retail: 0, currency: "EUR" }
-                        };
                         status.textContent = `✅ Pago confirmado. Nº reserva: ${bookingRef.substring(0, 8)}... Esperando generación de vouchers...`;
-                        startVoucherMonitoring(orderUuid, checkout, status, bookingRef, orderDataCompleto, octoPayload);
                     }
+
+                    // Independientemente de si Musement ha devuelto el voucher al instante o
+                    // hay que esperarlo, el aviso a Salesforce con la URL de descarga siempre
+                    // pasa por aquí: startVoucherMonitoring() comprueba el estado nada más
+                    // entrar (si ya hay voucher, lo detecta en el primer intento) y ese es el
+                    // único código que fusiona los vouchers y los envía al endpoint real.
+                    startVoucherMonitoring(orderUuid, checkout, status, bookingRef, orderDataCompleto, octoPayload);
                 }).catch(function (error) {
                     setPaymentError(checkout, error.message);
                     status.textContent = '❌ ' + error.message;

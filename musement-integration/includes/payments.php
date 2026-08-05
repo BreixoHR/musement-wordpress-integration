@@ -207,8 +207,44 @@ function musement_payment_sync_paid_order(array $order)
 
 
 /**
+ * Contacto en formato OCTO/Ventrata (mismos nombres de campo que usa
+ * MusementBookingService en Salesforce). Los campos que Musement no nos
+ * da (title, age, birthdate, streetAddress...) se dejan a null/vacío en vez
+ * de inventarse -- pero se incluye la clave para que la forma del objeto sea
+ * la que el parser de Salesforce espera.
+ */
+function musement_octo_contact_payload(string $first_name, string $last_name, string $email, string $phone, string $country = 'ES', string $language = 'es'): array {
+    return [
+        'id' => null,
+        'reference' => null,
+        'tags' => [],
+        'title' => null,
+        'fullName' => trim($first_name . ' ' . $last_name),
+        'firstName' => $first_name,
+        'lastName' => $last_name,
+        'emailAddress' => $email,
+        'phoneNumber' => $phone,
+        'age' => null,
+        'birthdate' => null,
+        'locales' => [$language],
+        'streetAddress' => null,
+        'city' => null,
+        'state' => null,
+        'postalCode' => null,
+        'country' => $country,
+        'nationality' => null,
+        'notes' => null,
+        'allowMarketing' => false,
+        'taxId' => null,
+        'idNumber' => null,
+        'company' => null,
+        'photoUrl' => null,
+    ];
+}
+
+/**
  * Construye el payload en formato estándar OCTO a partir de una orden de Musement
- * 
+ *
  * @param array $order_data Datos de la orden obtenidos de Musement API
  * @return array Payload listo para enviar como JSON
  */
@@ -216,6 +252,7 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
     $items = $order_data['items'] ?? [];
     $total_price = $order_data['total_price'] ?? ['value' => 0, 'currency' => 'EUR'];
     $order_reference = $order_data['identifier'] ?? $order_data['uuid'] ?? '';
+    $order_id = $order_data['uuid'] ?? wp_generate_uuid4();
 
     // Datos de contacto con prioridad al formulario
     $first_name = !empty($customer_data['first_name']) ? $customer_data['first_name'] : ($order_data['customer']['firstname'] ?? '');
@@ -223,12 +260,15 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
     $email      = !empty($customer_data['email'])      ? $customer_data['email']      : ($order_data['customer']['email'] ?? '');
     $phone      = !empty($customer_data['phone'])      ? $customer_data['phone']      : ($order_data['customer']['mobile'] ?? '');
 
+    $order_contact = musement_octo_contact_payload($first_name, $last_name, $email, $phone);
+
     $bookings = [];
 
     foreach ($items as $item) {
         $product_data = $item['product'] ?? [];
         $price = $item['retail_price_in_order_currency'] ?? $item['total_retail_price_in_order_currency'] ?? [];
         $amount = (float) ($price['value'] ?? 0);
+        $currency = $price['currency'] ?? 'EUR';
 
         $date_time = $product_data['date'] ?? '';
         $local_date_start = !empty($date_time) ? date('Y-m-d\TH:i:sP', strtotime($date_time)) : null;
@@ -241,44 +281,103 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
         elseif (strpos($ticket_holder_code, 'senior') !== false) $unit_type = 'SENIOR';
         elseif (strpos($ticket_holder_code, 'youth') !== false) $unit_type = 'YOUTH';
 
-        // Construir unitItems para este booking
-        $unit_items = [
-            [
-                'id' => $item['uuid'] ?? wp_generate_uuid4(),
-                'unitId' => $product_data['id'] ?? '',
+        $unit_id = $product_data['id'] ?? '';
+        $unit_name = $product_data['price_tag']['ticket_holder'] ?? $unit_type;
+        $booking_id = $item['uuid'] ?? wp_generate_uuid4();
+
+        // Vouchers de este item concreto, si Musement ya los generó
+        $item_vouchers = [];
+        foreach ((array) ($item['vouchers'] ?? []) as $voucher) {
+            if (!empty($voucher['url'])) {
+                $item_vouchers[] = [
+                    'deliveryFormat' => 'PDF_URL',
+                    'deliveryValue' => $voucher['url'],
+                ];
+            }
+        }
+
+        // OCTO no agrupa participantes con un "quantity": cada unidad física
+        // (cada entrada/persona) es su propio unitItem. Musement sí nos da la
+        // cantidad como un entero en el mismo item de carrito, así que lo
+        // repartimos en tantos unitItems como corresponda.
+        $quantity = max(1, (int) ($item['quantity'] ?? 1));
+        $unit_amount = $quantity > 0 ? $amount / $quantity : $amount;
+        $unit_items = [];
+
+        for ($i = 0; $i < $quantity; $i++) {
+            $unit_items[] = [
+                'id' => $quantity > 1 ? $booking_id . '-' . ($i + 1) : $booking_id,
+                'uuid' => $quantity > 1 ? $booking_id . '-' . ($i + 1) : $booking_id,
+                'unitId' => $unit_id,
                 'unitType' => $unit_type,
-                'quantity' => (int) ($item['quantity'] ?? 1),
-                'contact' => [
-                    'fullName' => trim($first_name . ' ' . $last_name),
-                    'emailAddress' => $email,
-                    'phoneNumber' => $phone
+                'unit' => [
+                    'id' => $unit_id,
+                    'internalName' => $unit_name,
+                    'type' => $unit_type,
                 ],
+                'status' => 'CONFIRMED',
+                'localDateTimeStart' => $local_date_start,
+                'contact' => $order_contact,
+                'ticket' => [
+                    'redemptionMethod' => 'DIGITAL',
+                    'deliveryOptions' => $item_vouchers,
+                ],
+                'questionAnswers' => [],
+                'extraItems' => [],
                 'pricing' => [
-                    'original' => (int) ($amount * 100),
-                    'retail'   => (int) ($amount * 100),
-                    'currency' => $price['currency'] ?? 'EUR'
-                ]
-            ]
-        ];
+                    'original' => (int) round($unit_amount * 100),
+                    'retail'   => (int) round($unit_amount * 100),
+                    'net'      => 0,
+                    'currency' => $currency,
+                    'currencyPrecision' => 2,
+                    'includedTaxes' => [],
+                ],
+            ];
+        }
 
         $bookings[] = [
-            'id' => $item['uuid'] ?? wp_generate_uuid4(),
-            'productId' => $product_data['activity_uuid'] ?? '',
-            'optionId' => $product_data['price_tag']['price_feature_code'] ?? 'DEFAULT',
+            'id' => $booking_id,
+            'uuid' => $booking_id,
+            'testMode' => false,
+            'resellerReference' => null,
+            'supplierReference' => $booking_id,
+            'tags' => [],
             'status' => 'CONFIRMED',
-            'localDateTimeStart' => $local_date_start,
-            'unitItems' => $unit_items,
-            'contact' => [
-                'firstName' => $first_name,
-                'lastName' => $last_name,
-                'emailAddress' => $email,
-                'phoneNumber' => $phone
+            'utcCreatedAt' => gmdate('Y-m-d\TH:i:s\Z'),
+            'utcUpdatedAt' => gmdate('Y-m-d\TH:i:s\Z'),
+            'utcConfirmedAt' => gmdate('Y-m-d\TH:i:s\Z'),
+            'productId' => $product_data['activity_uuid'] ?? '',
+            'product' => [
+                'id' => $product_data['activity_uuid'] ?? '',
+                'internalName' => $product_data['title'] ?? '',
             ],
+            'optionId' => $product_data['price_tag']['price_feature_code'] ?? 'DEFAULT',
+            'option' => [
+                'id' => $product_data['price_tag']['price_feature_code'] ?? 'DEFAULT',
+                'internalName' => $product_data['price_tag']['price_feature'] ?? 'DEFAULT',
+            ],
+            'cancellable' => true,
+            'confirmable' => false,
+            'localDateTimeStart' => $local_date_start,
+            'localDateTimeEnd' => $local_date_start,
+            'unitItems' => $unit_items,
+            'contact' => $order_contact,
+            'orderId' => $order_id,
+            'orderReference' => $order_reference,
+            'voucher' => [
+                'redemptionMethod' => 'DIGITAL',
+                'deliveryOptions' => $item_vouchers,
+            ],
+            'questionAnswers' => [],
+            'extraItems' => [],
             'pricing' => [
-                'original' => (int) ($amount * 100),
-                'retail'   => (int) ($amount * 100),
-                'currency' => $price['currency'] ?? 'EUR'
-            ]
+                'original' => (int) round($amount * 100),
+                'retail'   => (int) round($amount * 100),
+                'net'      => 0,
+                'currency' => $currency,
+                'currencyPrecision' => 2,
+                'includedTaxes' => [],
+            ],
         ];
     }
 
@@ -291,12 +390,9 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
             'status' => 'CONFIRMED',
             'localDateTimeStart' => null,
             'unitItems' => [],
-            'contact' => [
-                'firstName' => $first_name,
-                'lastName' => $last_name,
-                'emailAddress' => $email,
-                'phoneNumber' => $phone
-            ],
+            'contact' => $order_contact,
+            'orderId' => $order_id,
+            'orderReference' => $order_reference,
             'pricing' => ['original' => 0, 'retail' => 0, 'currency' => 'EUR']
         ];
     }
@@ -311,23 +407,29 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
             'capabilities' => ['octo/cart', 'octo/questions', 'octo/extras', 'ventrata/dashboard']
         ],
         'order' => [
-            'id' => $order_data['uuid'] ?? wp_generate_uuid4(),
+            'id' => $order_id,
             'testMode' => false,
             'supplierReference' => $order_reference,
+            'settlementMethod' => 'DIRECT',
+            'settlementMethods' => ['DIRECT'],
+            'emailReceipt' => false,
+            'quote' => false,
             'status' => 'CONFIRMED',
             'utcCreatedAt' => gmdate('Y-m-d\TH:i:s\Z'),
             'utcUpdatedAt' => gmdate('Y-m-d\TH:i:s\Z'),
+            'utcConfirmedAt' => gmdate('Y-m-d\TH:i:s\Z'),
+            'cancellable' => true,
+            'confirmable' => false,
             'bookings' => $bookings,
-            'contact' => [
-                'firstName' => $first_name,
-                'lastName' => $last_name,
-                'emailAddress' => $email,
-                'phoneNumber' => $phone
-            ],
+            'contact' => $order_contact,
+            'questionAnswers' => [],
             'pricing' => [
                 'original' => (int) (($total_price['value'] ?? 0) * 100),
                 'retail'   => (int) (($total_price['value'] ?? 0) * 100),
-                'currency' => $total_price['currency'] ?? 'EUR'
+                'net'      => 0,
+                'currency' => $total_price['currency'] ?? 'EUR',
+                'currencyPrecision' => 2,
+                'includedTaxes' => [],
             ]
         ]
     ];
