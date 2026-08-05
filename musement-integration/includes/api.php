@@ -241,7 +241,15 @@ function musement_get_activities_with_prices($lat = 37.1773, $lng = -3.5986, $li
 
 function musement_sync_products($lat = 37.1773, $lng = -3.5986, $limit = 12)
 {
-    $activities = musement_get_activities($lat, $lng, $limit);
+    // Igual que en musement_activities() (ajax.php): si hay una ciudad
+    // seleccionada en ajustes, se respeta y se busca por ciudad. Antes esta
+    // función ignoraba siempre la ciudad guardada y buscaba por lat/lng fijas,
+    // así que elegir ciudad y sincronizar no cambiaba nada.
+    $city_id = (int) get_option('musement_city_id', 0);
+
+    $activities = $city_id
+        ? musement_get_activities_by_city($city_id, $limit)
+        : musement_get_activities($lat, $lng, $limit);
 
     $stored = [];
 

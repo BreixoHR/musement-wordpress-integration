@@ -632,7 +632,11 @@ function musement_field_city_selector() {
 
 add_action('admin_init', function () {
 
-    if (isset($_GET['sync']) && current_user_can('manage_options')) {
+    // El botón "Sincronizar productos ahora" enlaza con &sync_products=1 (ver
+    // musement_products_field() más arriba); antes este handler escuchaba
+    // "sync" a secas, que ningún enlace de la interfaz llega a mandar nunca,
+    // así que el botón no disparaba jamás la sincronización real.
+    if (isset($_GET['sync_products']) && current_user_can('manage_options')) {
         musement_sync_products();
     }
     // Allow manual refresh of cities from admin UI
