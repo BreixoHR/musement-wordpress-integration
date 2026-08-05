@@ -185,7 +185,7 @@ function musement_get_activities($lat = 37.1773, $lng = -3.5986, $limit = 6): ar
             'lat' => $lat,
             'lng' => $lng,
             'limit' => $limit,
-    ], 'https://sandbox.musement.com/api/v3/activities?available_from=2026-05-07&available_to=2026-05-08&city_in=2');
+    ], 'https://sandbox.musement.com/api/v3/activities');
 
 
     $token = musement_get_access_token();
