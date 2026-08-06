@@ -433,6 +433,13 @@ function musement_get_cities() {
 
         $cities = $body['data'];
 
+        // El status era 2xx y "data" sí es un array, pero puede venir vacío (p.ej.
+        // por un filtro de mercado/idioma en producción) -- eso antes no dejaba
+        // ningún rastro en el log porque solo se registraban los fallos de verdad.
+        if (empty($cities)) {
+            error_log('[MUSEMENT] ⚠️ /cities respondió HTTP ' . $status . ' pero con 0 ciudades. Respuesta: ' . $raw_body);
+        }
+
         set_transient('musement_cities', $cities, 12 * HOUR_IN_SECONDS);
 
         return $cities;
