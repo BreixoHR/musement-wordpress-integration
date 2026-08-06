@@ -481,138 +481,15 @@ add_action('update_option_musement_city_id', function ($old, $new) {
         break;
     }
 
-    // When the city option is updated, also fetch activities for that city
-    if ($new) {
-        musement_fetch_activities_for_city($new);
-    }
+    // Antes, aquí se llamaba a musement_fetch_activities_for_city($new), que por
+    // cada actividad de la ciudad (hasta 50) probaba hasta 8 fechas distintas
+    // buscando disponibilidad -- hasta 400 peticiones HTTP secuenciales a Musement
+    // dentro de la misma petición de "Guardar configuración", dejando la página
+    // colgada varios minutos. Es además redundante: musement_sync_products()
+    // (el botón "Sincronizar productos ahora") ya rellena musement_products_cache
+    // con una sola llamada. Se quita la llamada lenta y la función entera.
 
 }, 10, 2);
-
-/**
- * Fetch activities for a given city and store a simplified cache used by the admin UI.
- *
- * @param int|string $city_id
- * @return bool
- */
-function musement_fetch_activities_for_city($city_id) {
-    $city_id = (string) $city_id;
-    $token = function_exists('musement_get_access_token') ? musement_get_access_token() : null;
-    
-    if (!$token) {
-        error_log('[MUSEMENT] No token available');
-        return false;
-    }
-    
-    // 1. Obtener actividades de la ciudad
-    $activities_url = add_query_arg([
-        'city_in' => $city_id,
-        'limit' => 50,
-    ], MUSEMENT_API_BASE_URL . '/api/v3/activities');
-    
-    $res = wp_remote_get($activities_url, [
-        'timeout' => 30,
-        'headers' => [
-            'Authorization' => 'Bearer ' . $token,
-            'Accept' => 'application/json',
-            'X-Musement-Application' => MUSEMENT_APPLICATION,
-            'X-Musement-Currency' => 'EUR',
-            'X-Musement-Market' => 'es',
-            'X-Musement-Version' => '3.4.0',
-        ],
-    ]);
-    
-    if (is_wp_error($res)) {
-        error_log('[MUSEMENT] Error: ' . $res->get_error_message());
-        return false;
-    }
-    
-    $body = json_decode(wp_remote_retrieve_body($res), true);
-    $activities = $body['data'] ?? [];
-    
-    if (empty($activities)) {
-        error_log('[MUSEMENT] No activities found');
-        return false;
-    }
-    
-    $map = [];
-    
-    // 2. Para cada actividad, buscar una fecha con disponibilidad
-    foreach ($activities as $activity) {
-        $uuid = $activity['uuid'] ?? '';
-        if (!$uuid) continue;
-        
-        $products = [];
-        
-        // Buscar disponibilidad en los próximos 60 días
-        for ($i = 7; $i <= 60; $i += 7) {
-            $test_date = date('Y-m-d', strtotime("+$i days"));
-            $availability_url = sprintf(
-                MUSEMENT_API_BASE_URL . '/api/v3/activities/%s/dates/%s',
-                $uuid,
-                $test_date
-            );
-            
-            $avail_res = wp_remote_get($availability_url, [
-                'timeout' => 20,
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $token,
-                    'Accept' => 'application/json',
-                    'X-Musement-Application' => MUSEMENT_APPLICATION,
-                    'X-Musement-Currency' => 'EUR',
-                    'X-Musement-Market' => 'es',
-                    'X-Musement-Version' => '3.4.0',
-                ],
-            ]);
-            
-            if (!is_wp_error($avail_res)) {
-                $avail_data = json_decode(wp_remote_retrieve_body($avail_res), true);
-                
-                // Buscar productos en la estructura correcta según la docu
-                if (isset($avail_data['ticket_products']) && is_array($avail_data['ticket_products'])) {
-                    $products = $avail_data['ticket_products'];
-                    break;
-                }
-                if (isset($avail_data['data']['ticket_products']) && is_array($avail_data['data']['ticket_products'])) {
-                    $products = $avail_data['data']['ticket_products'];
-                    break;
-                }
-            }
-        }
-        
-        // Si no hay productos, mostrar mensaje en el admin
-        if (empty($products)) {
-            error_log("[MUSEMENT] No products found for activity: {$activity['title']}");
-        }
-        
-        // Normalizar productos para el admin
-        $normalized_products = [];
-        foreach ($products as $product) {
-            $price = $product['retail_price'] ?? ['value' => 0, 'currency' => 'EUR'];
-            $normalized_products[] = [
-                'product_identifier' => $product['uuid'] ?? $product['id'] ?? '',
-                'name' => $product['name'] ?? 'Entrada',
-                'retail_price' => [
-                    'value' => $price['value'] ?? 0,
-                    'currency' => $price['currency'] ?? 'EUR',
-                    'formatted_value' => isset($price['value']) ? number_format($price['value'], 2) . ' €' : '0 €',
-                ],
-            ];
-        }
-        
-        $map[$uuid] = [
-            'title' => $activity['title'] ?? 'Actividad sin título',
-            'products' => $normalized_products,
-        ];
-    }
-    
-    if (!empty($map)) {
-        update_option('musement_products_cache', $map);
-        error_log('[MUSEMENT] Cache actualizado con ' . count($map) . ' actividades');
-        return true;
-    }
-    
-    return false;
-}
 
 function musement_field_city_selector() {
 

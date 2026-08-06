@@ -239,7 +239,81 @@ function musement_get_activities_with_prices($lat = 37.1773, $lng = -3.5986, $li
 }
 
 
-function musement_sync_products($lat = 37.1773, $lng = -3.5986, $limit = 12)
+/**
+ * Trae TODAS las actividades de una ciudad, paginando con "offset" hasta que
+ * Musement devuelva una página con menos elementos de los pedidos (o vacía) --
+ * así no hace falta que la API exponga ningún total explícito, simplemente se
+ * para cuando una página viene incompleta.
+ *
+ * Solo debe usarse en contextos de admin/sincronización manual (como el botón
+ * "Sincronizar productos ahora"), nunca en el widget del frontend: recorrer
+ * varias páginas en cada carga sería demasiado lento para un visitante.
+ */
+function musement_get_all_activities_by_city(int $city_id, int $per_page = 100, int $max_pages = 20): array
+{
+    $token = musement_get_access_token();
+
+    if (!$token || !$city_id) {
+        return [];
+    }
+
+    $all_activities = [];
+    $offset = 0;
+
+    for ($page = 0; $page < $max_pages; $page++) {
+        $url = add_query_arg([
+            'city_in' => $city_id,
+            'limit' => $per_page,
+            'offset' => $offset,
+        ], MUSEMENT_API_BASE_URL . '/api/v3/activities');
+
+        $res = wp_remote_get($url, [
+            'timeout' => 20,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $token,
+                'Accept-Language' => 'es-ES',
+                'X-Musement-Application' => MUSEMENT_APPLICATION,
+                'X-Musement-Currency' => 'EUR',
+                'X-Musement-Market' => 'es',
+                'X-Musement-Version' => '3.4.0',
+            ],
+        ]);
+
+        if (is_wp_error($res)) {
+            error_log('[MUSEMENT] ❌ Error paginando actividades (ciudad ' . $city_id . ', offset ' . $offset . '): ' . $res->get_error_message());
+            break;
+        }
+
+        $status = wp_remote_retrieve_response_code($res);
+        $body = json_decode(wp_remote_retrieve_body($res), true);
+
+        if ($status < 200 || $status >= 300) {
+            error_log('[MUSEMENT] ❌ Error paginando actividades (ciudad ' . $city_id . ', offset ' . $offset . '). HTTP ' . $status . '. Respuesta: ' . wp_remote_retrieve_body($res));
+            break;
+        }
+
+        $batch = is_array($body['data'] ?? null) ? $body['data'] : [];
+
+        if (empty($batch)) {
+            break;
+        }
+
+        $all_activities = array_merge($all_activities, $batch);
+
+        // Página incompleta = era la última.
+        if (count($batch) < $per_page) {
+            break;
+        }
+
+        $offset += $per_page;
+    }
+
+    error_log('[MUSEMENT] Paginación de actividades completada para ciudad ' . $city_id . ': ' . count($all_activities) . ' actividades en ' . ($page + 1) . ' página(s).');
+
+    return $all_activities;
+}
+
+function musement_sync_products($lat = 37.1773, $lng = -3.5986, $limit = 100)
 {
     // Igual que en musement_activities() (ajax.php): si hay una ciudad
     // seleccionada en ajustes, se respeta y se busca por ciudad. Antes esta
@@ -247,8 +321,11 @@ function musement_sync_products($lat = 37.1773, $lng = -3.5986, $limit = 12)
     // así que elegir ciudad y sincronizar no cambiaba nada.
     $city_id = (int) get_option('musement_city_id', 0);
 
+    // Con ciudad seleccionada, se pagina para traer el catálogo completo (no solo
+    // la primera página). Sin ciudad, se mantiene la búsqueda por lat/lng de
+    // siempre, acotada por $limit -- es un fallback, no el catálogo de una ciudad.
     $activities = $city_id
-        ? musement_get_activities_by_city($city_id, $limit)
+        ? musement_get_all_activities_by_city($city_id)
         : musement_get_activities($lat, $lng, $limit);
 
     $stored = [];
