@@ -396,7 +396,7 @@ function musement_get_cities() {
         $token = function_exists('musement_get_access_token') ? musement_get_access_token() : null;
 
         $res = wp_remote_get(
-            'https://sandbox.musement.com/api/v3/cities',
+            MUSEMENT_API_BASE_URL . '/api/v3/cities',
             [
                 'timeout' => 25,
                 'headers' => [
@@ -489,7 +489,7 @@ function musement_fetch_activities_for_city($city_id) {
     $activities_url = add_query_arg([
         'city_in' => $city_id,
         'limit' => 50,
-    ], 'https://sandbox.musement.com/api/v3/activities');
+    ], MUSEMENT_API_BASE_URL . '/api/v3/activities');
     
     $res = wp_remote_get($activities_url, [
         'timeout' => 30,
@@ -529,7 +529,7 @@ function musement_fetch_activities_for_city($city_id) {
         for ($i = 7; $i <= 60; $i += 7) {
             $test_date = date('Y-m-d', strtotime("+$i days"));
             $availability_url = sprintf(
-                'https://sandbox.musement.com/api/v3/activities/%s/dates/%s',
+                MUSEMENT_API_BASE_URL . '/api/v3/activities/%s/dates/%s',
                 $uuid,
                 $test_date
             );
@@ -677,7 +677,7 @@ add_action('admin_init', function() {
         foreach ($fechas as $fecha) {
             echo '<h3>Fecha: ' . $fecha . '</h3>';
             
-            $url = 'https://sandbox.musement.com/api/v3/activities/' . $uuid . '/dates/' . $fecha;
+            $url = MUSEMENT_API_BASE_URL . '/api/v3/activities/' . $uuid . '/dates/' . $fecha;
             
             $res = wp_remote_get($url, [
                 'headers' => [
@@ -720,7 +720,7 @@ add_action('admin_init', function() {
             'available_from' => date('Y-m-d', strtotime('+7 days')),
             'available_to' => date('Y-m-d', strtotime('+30 days')),
             'limit' => 5,
-        ], 'https://sandbox.musement.com/api/v3/activities');
+        ], MUSEMENT_API_BASE_URL . '/api/v3/activities');
         
         echo '<h2>Buscando actividades con disponibilidad</h2>';
         echo '<p>URL: ' . $url . '</p>';

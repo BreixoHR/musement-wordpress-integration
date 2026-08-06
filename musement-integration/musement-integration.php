@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Musement Integration
  * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 0.13.438
+ * Version: 2.04.000
  * Author: Jose Pablo Ibañez
  * Text Domain: musement-integration
  */
@@ -11,12 +11,18 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '0.13.438');
+define('MUSEMENT_INTEGRATION_VERSION', '2.04.000');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
 define('MUSEMENT_CLIENT_ID', '***');
 define('MUSEMENT_CLIENT_SECRET', '***');
+
+// Dominio base de la API de Musement. Antes estaba quemado como
+// "sandbox.musement.com" en 26 sitios distintos repartidos en 4 archivos --
+// si alguna vez hay que volver a sandbox (o alternar entre entornos), este es
+// el UNICO sitio que hay que tocar.
+define('MUSEMENT_API_BASE_URL', 'https://api.musement.com');
 
 /**  CONTRASEÑAS DE SANDBOX ----------- MUSEMENT
 * define('MUSEMENT_APPLICATION', '***');

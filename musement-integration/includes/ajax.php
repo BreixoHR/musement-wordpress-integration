@@ -135,7 +135,7 @@ function musement_day_availability() {
 
     // 🔥 CONSTRUIR LA URL
     $url = sprintf(
-        'https://sandbox.musement.com/api/v3/activities/%s/dates/%s',
+        MUSEMENT_API_BASE_URL . '/api/v3/activities/%s/dates/%s',
         rawurlencode($uuid),
         rawurlencode($date)
     );
@@ -207,7 +207,7 @@ function musement_month_availability() {
     }
 
     $url = sprintf(
-        'https://sandbox.musement.com/api/v3/activities/%s/dates',
+        MUSEMENT_API_BASE_URL . '/api/v3/activities/%s/dates',
         rawurlencode($uuid)
     );
 
@@ -266,7 +266,7 @@ function musement_availability() {
             'pickup' => $pickup ?: null
         ]),
         sprintf(
-            'https://sandbox.musement.com/api/v3/activities/%s/dates',
+            MUSEMENT_API_BASE_URL . '/api/v3/activities/%s/dates',
             rawurlencode($uuid)
         )
     );
@@ -425,7 +425,7 @@ function musement_get_activities_by_city($city_id, $limit = 12) {
     $url = add_query_arg([
         'city_in' => $city_id,
         'limit' => $limit,
-    ], 'https://sandbox.musement.com/api/v3/activities');
+    ], MUSEMENT_API_BASE_URL . '/api/v3/activities');
     
     $res = wp_remote_get($url, [
         'timeout' => 15,
@@ -708,7 +708,7 @@ function musement_participant_schema() {
     }
 
     $response = wp_remote_get(
-        "https://sandbox.musement.com/api/v3/activities/{$uuid}/participants-info/schema",
+        MUSEMENT_API_BASE_URL . "/api/v3/activities/{$uuid}/participants-info/schema",
         [
             'timeout' => 20,
             'headers' => [
@@ -863,7 +863,7 @@ function musement_get_pickup_options($uuid) {
     }
     
     $url = sprintf(
-        'https://sandbox.musement.com/api/v3/activities/%s/pickups',
+        MUSEMENT_API_BASE_URL . '/api/v3/activities/%s/pickups',
         rawurlencode($uuid)
     );
     

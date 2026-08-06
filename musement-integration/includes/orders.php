@@ -19,11 +19,6 @@ function musement_orders_install(): void
     $table = musement_orders_table();
     $charset_collate = $wpdb->get_charset_collate();
 
-    // 🔥 VERIFICAR SI LA COLUMNA EXISTE
-    $column_exists = $wpdb->get_var(
-        "SHOW COLUMNS FROM {$table} LIKE 'participant_data_json'"
-    );
-
     $sql = "CREATE TABLE {$table} (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         order_reference VARCHAR(64) NOT NULL,
@@ -48,14 +43,12 @@ function musement_orders_install(): void
         KEY customer_email (customer_email)
     ) {$charset_collate};";
 
+    // dbDelta() ya compara el esquema existente y añade participant_data_json
+    // si faltara -- el ALTER TABLE manual que había aquí antes era redundante
+    // (y, peor, se ejecutaba SIEMPRE porque comprobaba la columna antes de que
+    // dbDelta hubiera creado la tabla, así que fallaba con "Duplicate column"
+    // en cada activación).
     dbDelta($sql);
-
-    // 🔥 SI LA COLUMNA NO EXISTE, AGREGARLA
-    if (!$column_exists) {
-        $wpdb->query(
-            "ALTER TABLE {$table} ADD COLUMN participant_data_json LONGTEXT NULL AFTER integration_errors_json"
-        );
-    }
 
     update_option('musement_orders_db_version', '1.1.0');
 }

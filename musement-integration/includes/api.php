@@ -28,7 +28,7 @@ function musement_order_lock_release(string $lock_name): void {
 
 function musement_integration_api_request(string $endpoint, array $query_args = [])
 {
-    $base_url = 'https://api.musement.com/api/v3/';
+    $base_url = MUSEMENT_API_BASE_URL . '/api/v3/';
     $url = add_query_arg($query_args, trailingslashit($base_url) . ltrim($endpoint, '/'));
 
     $response = wp_remote_get($url, [
@@ -66,7 +66,7 @@ function musement_remote_get_activity_tickets(string $order_uuid, string $activi
         return new WP_Error('musement_missing_data', 'Missing token, order uuid or activity uuid.');
     }
 
-    $endpoint = sprintf('https://sandbox.musement.com/api/v3/orders/%s/activities/%s/tickets', rawurlencode($order_uuid), rawurlencode($activity_uuid));
+    $endpoint = sprintf(MUSEMENT_API_BASE_URL . '/api/v3/orders/%s/activities/%s/tickets', rawurlencode($order_uuid), rawurlencode($activity_uuid));
     $res = wp_remote_get($endpoint, [
         'timeout' => 20,
         'headers' => [
@@ -98,7 +98,7 @@ function musement_remote_download_activity_voucher(string $order_uuid, string $a
         return new WP_Error('musement_missing_data', 'Missing token, order uuid or activity uuid.');
     }
 
-    $endpoint = sprintf('https://sandbox.musement.com/api/v3/orders/%s/activities/%s/voucher', rawurlencode($order_uuid), rawurlencode($activity_uuid));
+    $endpoint = sprintf(MUSEMENT_API_BASE_URL . '/api/v3/orders/%s/activities/%s/voucher', rawurlencode($order_uuid), rawurlencode($activity_uuid));
     $res = wp_remote_get($endpoint, [
         'timeout' => 30,
         'headers' => [
@@ -146,7 +146,7 @@ function musement_remote_mark_order_paid(string $order_uuid) {
         return new WP_Error('musement_missing_data', 'Missing token or order uuid.');
     }
 
-    $endpoint = 'https://sandbox.musement.com/api/v3/payments/no/payment';
+    $endpoint = MUSEMENT_API_BASE_URL . '/api/v3/payments/no/payment';
     $body = ['uuid' => $order_uuid];
 
     $res = wp_remote_post($endpoint, [
@@ -185,7 +185,7 @@ function musement_get_activities($lat = 37.1773, $lng = -3.5986, $limit = 6): ar
             'lat' => $lat,
             'lng' => $lng,
             'limit' => $limit,
-    ], 'https://sandbox.musement.com/api/v3/activities');
+    ], MUSEMENT_API_BASE_URL . '/api/v3/activities');
 
 
     $token = musement_get_access_token();
@@ -300,7 +300,7 @@ function musement_get_access_token() {
         return $cached;
     }
 
-    $response = wp_remote_post('https://sandbox.musement.com/api/v3/login', [
+    $response = wp_remote_post(MUSEMENT_API_BASE_URL . '/api/v3/login', [
         'headers' => [
             'X-Musement-Application' => MUSEMENT_APPLICATION,
             'X-Musement-Version' => '3.4.0',
@@ -356,7 +356,7 @@ function musement_remote_get_order(string $order_uuid) {
         return new WP_Error('musement_missing_data', 'Falta el token o el UUID de la orden.');
     }
 
-    $endpoint = sprintf('https://sandbox.musement.com/api/v3/orders/%s', $order_uuid);
+    $endpoint = sprintf(MUSEMENT_API_BASE_URL . '/api/v3/orders/%s', $order_uuid);
 
     $res = wp_remote_get($endpoint, [
         'timeout' => 20,
@@ -436,7 +436,7 @@ function musement_remote_download_ticket_pdf($order_uuid, $activity_uuid, $ticke
     }
 
     $endpoint = sprintf(
-        'https://sandbox.musement.com/api/v3/orders/%s/activities/%s/tickets/%s',
+        MUSEMENT_API_BASE_URL . '/api/v3/orders/%s/activities/%s/tickets/%s',
         rawurlencode($order_uuid),
         rawurlencode($activity_uuid),
         rawurlencode($ticket_id)

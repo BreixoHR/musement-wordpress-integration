@@ -40,7 +40,7 @@ function musement_create_remote_cart(): ?array
         error_log('[MUSEMENT] 📤 Creating remote cart...');
 
 
-    $res = wp_remote_post('https://sandbox.musement.com/api/v3/carts', [
+    $res = wp_remote_post(MUSEMENT_API_BASE_URL . '/api/v3/carts', [
         'timeout' => 15,
         'headers' => [
             'Authorization' => 'Bearer ' . $token,
@@ -105,7 +105,7 @@ function musement_remote_cart_refresh(): ?array
 
     $res = wp_remote_get(
         sprintf(
-            'https://sandbox.musement.com/api/v3/carts/%s',
+            MUSEMENT_API_BASE_URL . '/api/v3/carts/%s',
             $cart_id
         ),
         [
@@ -417,7 +417,7 @@ function musement_remote_cart_update_item_participants(string $remote_item_uuid,
     }
 
     $endpoint = sprintf(
-        'https://sandbox.musement.com/api/v3/carts/%s/items/%s/participants',
+        MUSEMENT_API_BASE_URL . '/api/v3/carts/%s/items/%s/participants',
         rawurlencode($cart_id),
         rawurlencode($remote_item_uuid)
     );
@@ -639,7 +639,7 @@ function musement_remote_cart_add_item(array &$item)
     }
 
     $endpoint = sprintf(
-        'https://sandbox.musement.com/api/v3/carts/%s/items',
+        MUSEMENT_API_BASE_URL . '/api/v3/carts/%s/items',
         $cart_id
     );
 
@@ -878,7 +878,7 @@ function musement_remote_cart_remove_item(string $remote_item_uuid): bool
     }
 
     $endpoint = sprintf(
-        'https://sandbox.musement.com/api/v3/carts/%s/items/%s',
+        MUSEMENT_API_BASE_URL . '/api/v3/carts/%s/items/%s',
         $cart_id,
         $remote_item_uuid
     );
@@ -918,7 +918,7 @@ function musement_remote_create_order(string $cart_uuid, string $email_notificat
         return new WP_Error('musement_missing_data', 'Missing token or cart uuid.');
     }
 
-    $endpoint = 'https://sandbox.musement.com/api/v3/orders';
+    $endpoint = MUSEMENT_API_BASE_URL . '/api/v3/orders';
 
     $body = [
         'cart_uuid' => $cart_uuid,
@@ -1370,7 +1370,7 @@ function musement_cart_clear(): void
 
         wp_remote_request(
             sprintf(
-                'https://sandbox.musement.com/api/v3/carts/%s',
+                MUSEMENT_API_BASE_URL . '/api/v3/carts/%s',
                 $remote_uuid
             ),
             [
@@ -1409,7 +1409,7 @@ function musement_remote_cart_update_customer(array $customer_data): bool
 
     // ✅ Endpoint correcto: PUT /carts/{cartUuid}/customer
     $endpoint = sprintf(
-        'https://sandbox.musement.com/api/v3/carts/%s/customer',
+        MUSEMENT_API_BASE_URL . '/api/v3/carts/%s/customer',
         $cart_id
     );
 
