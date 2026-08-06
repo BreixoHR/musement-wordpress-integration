@@ -1091,19 +1091,37 @@ function musement_certified_calendar_shortcode($atts)
         }
 
 
-        function mapSchemaToQuestions(schema) {
-            if (!schema || !schema.properties) {
+        function mapSchemaToQuestions(rawSchema) {
+            if (!rawSchema) {
+                return [];
+            }
+
+            // Algunas respuestas de Musement envuelven el JSON Schema en "data"
+            // (como la mayoría de endpoints de este plugin), otras lo devuelven
+            // directamente en la raíz. Se aceptan ambas formas en vez de asumir
+            // solo una, para no depender de que todos los productos respondan
+            // exactamente igual.
+            var schema = rawSchema.properties
+                ? rawSchema
+                : (rawSchema.data && rawSchema.data.properties ? rawSchema.data : null);
+
+            if (!schema || typeof schema.properties !== 'object' || schema.properties === null) {
+                // No es un error -- simplemente no se reconoce la forma como un
+                // JSON Schema con preguntas. Se avisa por consola para poder ver
+                // qué mandó Musement realmente si algún producto falla, en vez de
+                // fallar en silencio o reventar más abajo.
+                console.warn('musement: esquema de participantes vacío o con forma inesperada', rawSchema);
                 return [];
             }
 
             return Object.entries(schema.properties).map(function(entry) {
                 var id = entry[0];
-                var field = entry[1];
+                var field = entry[1] || {};
                 return {
                     id: id,
                     label: field.title || field.label || id,
                     type: getInputType(field),
-                    required: Array.isArray(schema.required) && schema.required.includes(id),
+                    required: Array.isArray(schema.required) && schema.required.indexOf(id) !== -1,
                     options: field.enum || [],
                     placeholder: field.placeholder || ''
                 };

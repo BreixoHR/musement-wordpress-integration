@@ -707,13 +707,28 @@ function musement_participant_schema() {
         ], 400);
     }
 
+    // A diferencia de todos los demás endpoints de /activities/* de este plugin
+    // (dates, pickups, etc.), esta llamada no mandaba cabecera Authorization --
+    // faltaba pedir el token y añadirlo. Sin él, Musement devuelve 401 y el
+    // calendario muestra siempre "Error cargando las preguntas".
+    $token = musement_get_access_token();
+
+    if (!$token) {
+        wp_send_json_error([
+            'message' => 'No se pudo obtener el token de acceso.',
+        ], 500);
+    }
+
     $response = wp_remote_get(
         MUSEMENT_API_BASE_URL . "/api/v3/activities/{$uuid}/participants-info/schema",
         [
             'timeout' => 20,
             'headers' => [
+                'Authorization'           => 'Bearer ' . $token,
                 'Accept'                  => 'application/json',
                 'X-Musement-Application'  => MUSEMENT_APPLICATION,
+                'X-Musement-Currency'     => 'EUR',
+                'X-Musement-Market'       => 'es',
                 'X-Musement-Version'      => '3.4.0',
                 'Accept-Language'         => 'es-ES',
             ],
@@ -729,7 +744,18 @@ function musement_participant_schema() {
     $code = wp_remote_retrieve_response_code($response);
     $body = wp_remote_retrieve_body($response);
 
+    // Un 404 aquí no significa que algo haya fallado: significa que ESTE producto
+    // en concreto no tiene definido un esquema de información de participantes
+    // (la mayoría de productos no lo necesitan). Antes esto se trataba como error
+    // y el calendario mostraba "Error cargando las preguntas" -- precisamente el
+    // caso en el que no hacía falta preguntar nada, es decir, cero preguntas es
+    // la respuesta correcta, no un fallo.
+    if ($code === 404) {
+        wp_send_json_success(['properties' => (object) [], 'required' => []]);
+    }
+
     if ($code >= 400) {
+        error_log('[MUSEMENT] ❌ participants-info/schema fallo. UUID: ' . $uuid . '. HTTP ' . $code . '. Respuesta: ' . $body);
         wp_send_json_error([
             'code' => $code,
             'body' => json_decode($body, true),
