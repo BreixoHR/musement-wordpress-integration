@@ -420,18 +420,29 @@ function musement_get_cities() {
         $raw_body = wp_remote_retrieve_body($res);
         $body = json_decode($raw_body, true);
 
-        // Antes, si Musement devolvía un error (p.ej. el 401 "malformed request" que
-        // se ve cuando el token está vacío porque el login falló), su cuerpo
-        // {"code":1401,"message":"..."} caía en el "elseif (is_array($body))" de
-        // más abajo y se trataba como si fuera la lista de ciudades -- el select
-        // del admin se quedaba sin opciones válidas pero SIN mostrar el aviso de
-        // "no se han cargado ciudades", así que parecía que todo iba bien.
-        if ($status < 200 || $status >= 300 || !is_array($body['data'] ?? null)) {
+        if ($status < 200 || $status >= 300 || !is_array($body)) {
             error_log('[MUSEMENT] ❌ No se pudieron cargar ciudades. HTTP ' . $status . '. Respuesta: ' . $raw_body);
             return [];
         }
 
-        $cities = $body['data'];
+        // Sandbox envuelve la lista en {"data": [...]}, pero producción devuelve
+        // directamente un array plano de ciudades en la raíz de la respuesta. Antes
+        // solo se aceptaba la forma con "data", así que en producción esto siempre
+        // caía en "formato inesperado" aunque las ciudades venían perfectamente.
+        // Para no confundir un array plano de ciudades con un objeto de error tipo
+        // {"code":1401,"message":"..."} (que también es "un array" para PHP), se
+        // exige que tenga claves numéricas secuenciales y que el primer elemento
+        // tenga pinta de ciudad.
+        $is_plain_list = array_values($body) === $body;
+
+        if (is_array($body['data'] ?? null)) {
+            $cities = $body['data'];
+        } elseif ($is_plain_list && isset($body[0]['id'], $body[0]['name'])) {
+            $cities = $body;
+        } else {
+            error_log('[MUSEMENT] ❌ No se pudieron cargar ciudades (formato de respuesta inesperado). HTTP ' . $status . '. Respuesta: ' . $raw_body);
+            return [];
+        }
 
         // El status era 2xx y "data" sí es un array, pero puede venir vacío (p.ej.
         // por un filtro de mercado/idioma en producción) -- eso antes no dejaba
