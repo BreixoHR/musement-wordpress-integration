@@ -476,6 +476,7 @@
             date: card._selectedDate || '',
             time: slot.time || '',
             product_identifier: product.product_identifier || '',
+            type: product.type || 'musement',
             product_name: product.name || '',
 
             option_name: slot.option_name || '',
@@ -1019,8 +1020,11 @@
                         products: (slot.products || []).map(function(product) {
                             return {
                                 product_identifier: product.product_id || product.product_identifier,
+                                type: product.type || 'musement',
                                 name: product.name,
                                 availability: product.availability,
+                                holder_code: product.holder_code || '',
+                                holder_code_normalized: product.holder_code_normalized || '',
                                 price: {
                                     value: product.retail_price?.value || 0,
                                     currency: product.retail_price?.currency || 'EUR',
@@ -1044,8 +1048,11 @@
                             products: (slot.products || []).map(function(product) {
                                 return {
                                     product_identifier: product.product_id,
+                                    type: product.type || 'musement',
                                     name: product.name,
                                     availability: product.availability,
+                                    holder_code: product.holder_code || '',
+                                    holder_code_normalized: product.holder_code_normalized || '',
                                     price: {
                                         value: product.retail_price?.value || 0,
                                         currency: product.retail_price?.currency || 'EUR',

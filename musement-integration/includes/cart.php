@@ -311,7 +311,7 @@ function musement_remote_cart_add_error(string $code, string $message, array $da
 function musement_remote_cart_minimal_item_payload(array $item): array
 {
     $payload = [
-        'type' => 'musement',
+        'type' => !empty($item['type']) ? (string) $item['type'] : 'musement',
         'product_identifier' => (string) $item['product_identifier'],
         'quantity' => (int) $item['quantity'],
     ];
@@ -782,6 +782,142 @@ function musement_remote_cart_add_item(array &$item)
     return musement_remote_cart_finalize_add($item, $response_body);
 }
 
+function musement_is_list_array(array $arr): bool
+{
+    if ($arr === []) {
+        return true;
+    }
+
+    return array_keys($arr) === range(0, count($arr) - 1);
+}
+
+/**
+ * Normaliza la respuesta de POST /carts/{uuid}/items cuando el body enviado
+ * fue un array con varios productos, para devolver la lista de items creados
+ * en el mismo orden en que se enviaron.
+ */
+function musement_remote_cart_batch_response_items($response_data, int $expected_count): array
+{
+    if (!is_array($response_data)) {
+        return [];
+    }
+
+    if ($expected_count === 1 && musement_remote_cart_response_is_item($response_data)) {
+        return [$response_data];
+    }
+
+    if (musement_is_list_array($response_data)) {
+        return $response_data;
+    }
+
+    $cart_items = musement_remote_cart_items_from_response($response_data);
+    if (!empty($cart_items)) {
+        return $cart_items;
+    }
+
+    return [];
+}
+
+/**
+ * Añade varios tipos de entrada (adulto/niño/etc.) al carrito remoto en UNA
+ * sola petición, mandando un array JSON con un producto por entrada, tal como
+ * exige la documentación oficial de Musement:
+ * https://partner-api.musement.com/guide/booking-flows/adding-items-to-cart/
+ *
+ * Esto es imprescindible para inventario en tiempo real (type
+ * "musement-realtime"): si los tipos se mandan en peticiones separadas,
+ * Musement responde 410 PARTY_SIZE_NOT_RESPECTED porque el tamaño de grupo
+ * se valida por petición, no sobre el total acumulado del carrito.
+ *
+ * @param array<int, array> &$items Items normalizados (por referencia: se les
+ *                                  rellena remote_item_uuid al terminar).
+ * @return true|WP_Error
+ */
+function musement_remote_cart_add_items_batch(array &$items)
+{
+    if (empty($items)) {
+        return true;
+    }
+
+    $cart_id = musement_remote_cart_get_id();
+    $token = musement_get_access_token();
+
+    if (!$cart_id || !$token) {
+        return musement_remote_cart_add_error(
+            'musement_remote_cart_missing_auth',
+            __('Falta el carrito remoto o el token de Musement.', 'musement-integration')
+        );
+    }
+
+    $cart_check = musement_remote_cart_refresh();
+    if (!$cart_check) {
+        error_log('[MUSEMENT] ❌ Could not refresh cart, recreating...');
+        $new_cart = musement_create_remote_cart();
+        if ($new_cart && isset($new_cart['uuid'])) {
+            $_SESSION['musement_remote_cart'] = $new_cart;
+            $cart_id = $new_cart['uuid'];
+        } else {
+            return musement_remote_cart_add_error(
+                'musement_remote_cart_recreate_failed',
+                __('No se pudo recrear el carrito remoto de Musement.', 'musement-integration')
+            );
+        }
+    }
+
+    $endpoint = sprintf(
+        MUSEMENT_API_BASE_URL . '/api/v3/carts/%s/items',
+        $cart_id
+    );
+
+    $payloads = array_values(array_map('musement_remote_cart_minimal_item_payload', $items));
+
+    error_log('[MUSEMENT] 📤 Enviando grupo al carrito remoto (' . count($payloads) . ' items): ' . wp_json_encode($payloads));
+
+    $res = musement_remote_cart_post_item($endpoint, $token, $payloads);
+
+    if (is_wp_error($res)) {
+        return $res;
+    }
+
+    $status = wp_remote_retrieve_response_code($res);
+    $response_body = wp_remote_retrieve_body($res);
+
+    if ($status < 200 || $status >= 300) {
+        return musement_remote_cart_add_error(
+            'musement_remote_cart_add_failed',
+            __('Musement rechazo el producto al copiarlo al carrito remoto.', 'musement-integration'),
+            [
+                'status' => $status,
+                'body' => json_decode($response_body, true) ?: $response_body,
+                'payload' => $payloads,
+            ]
+        );
+    }
+
+    error_log('[MUSEMENT] ✅ Remote add (grupo) succeeded. Status: ' . $status . ' Response: ' . $response_body);
+
+    $response_data = json_decode($response_body, true);
+    $response_items = musement_remote_cart_batch_response_items($response_data, count($items));
+
+    foreach ($items as $index => &$item) {
+        $entry = $response_items[$index] ?? null;
+        musement_remote_cart_attach_item_uuid($item, is_array($entry) ? $entry : null);
+    }
+    unset($item);
+
+    $cart = musement_remote_cart_refresh();
+    if (is_array($cart)) {
+        foreach ($items as &$item) {
+            if (empty($item['remote_item_uuid'])) {
+                musement_remote_cart_attach_item_uuid($item, $cart);
+            }
+        }
+        unset($item);
+    }
+
+    return true;
+}
+
 function musement_remote_cart_sync_from_local()
 {
     musement_cart_start_session();
@@ -1023,6 +1159,7 @@ function musement_cart_normalize_item(array $raw): array
         'date' => sanitize_text_field($raw['date'] ?? ''),
         'time' => sanitize_text_field($raw['time'] ?? ''),
 
+        'type' => sanitize_text_field($raw['type'] ?? '') ?: 'musement',
         'product_identifier' => sanitize_text_field($raw['product_identifier'] ?? ''),
         'product_name' => sanitize_text_field($raw['product_name'] ?? ''),
 
@@ -1076,13 +1213,15 @@ function musement_cart_payload(): array
  * - Si "items" no llega o viene vacío, hace fallback al comportamiento legacy
  *   (un único producto/tipo para todos los participantes), usando los campos
  *   sueltos product_identifier/holder_code/unit_price/quantity de siempre.
- * - Llama a musement_remote_cart_add_item() una vez por cada tipo de entrada
- *   distinto, no una sola vez para todos los participantes.
+ * - Llama a musement_remote_cart_add_items_batch() UNA sola vez con todos los
+ *   tipos de entrada del grupo, en vez de una llamada por tipo: Musement exige
+ *   mandar el grupo completo en una única petición (array JSON) para inventario
+ *   en tiempo real, o rechaza cada llamada individual con PARTY_SIZE_NOT_RESPECTED.
+ *   Por eso el añadido del grupo es ahora atómico: o se añaden todos los tipos,
+ *   o ninguno (ya no hay "éxito parcial" a nivel de tipo de entrada).
  * - Reparte participant_info entre los items según la respuesta "ticket_type"
  *   de cada participante, para que musement_remote_cart_update_item_participants()
  *   reciba solo los participantes que corresponden a cada tipo.
- * - Si algún tipo falla al añadirse pero otros sí se añaden, se informa como
- *   éxito parcial (con "partial_errors") en vez de perder todo el carrito.
  */
 function musement_cart_add_ajax(): void
 {
@@ -1133,6 +1272,7 @@ function musement_cart_add_ajax(): void
 
     if (!is_array($items_breakdown) || empty($items_breakdown)) {
         $items_breakdown = [[
+            'type' => isset($_POST['type']) ? wp_unslash($_POST['type']) : 'musement',
             'productIdentifier' => isset($_POST['product_identifier']) ? wp_unslash($_POST['product_identifier']) : '',
             'productName' => isset($_POST['product_name']) ? wp_unslash($_POST['product_name']) : '',
             'holderCode' => isset($_POST['holder_code']) ? wp_unslash($_POST['holder_code']) : '',
@@ -1179,7 +1319,14 @@ function musement_cart_add_ajax(): void
 
     musement_cart_start_session();
 
-    $added_items = [];
+    // Fase 1: normalizar todos los tipos de entrada del grupo (adulto/niño/etc.)
+    // sin tocar aún el carrito remoto, para poder mandarlos juntos en UNA sola
+    // petición. Es imprescindible para inventario en tiempo real (type
+    // "musement-realtime"): si se separan en peticiones individuales, Musement
+    // responde 410 PARTY_SIZE_NOT_RESPECTED en cada una porque valida el tamaño
+    // de grupo por petición, no sobre el total acumulado del carrito.
+    $items_to_add = [];
+    $participant_info_by_item = [];
     $errors = [];
 
     foreach ($items_breakdown as $breakdown) {
@@ -1204,6 +1351,7 @@ function musement_cart_add_ajax(): void
             'title' => $base['title'],
             'date' => $base['date'],
             'time' => $base['time'],
+            'type' => sanitize_text_field((string) ($breakdown['type'] ?? 'musement')),
             'product_identifier' => $product_identifier,
             'product_name' => sanitize_text_field((string) ($breakdown['productName'] ?? '')),
             'option_name' => $base['option_name'],
@@ -1224,40 +1372,42 @@ function musement_cart_add_ajax(): void
             'customer_extra_data' => $customer_extra_data,
         ]);
 
-        error_log('[MUSEMENT] Cart add AJAX normalized item (' . $product_identifier . '): ' . wp_json_encode($item));
+        $items_to_add[] = $item;
+        $participant_info_by_item[] = $item_participant_info;
+    }
 
-        $added = musement_remote_cart_add_item($item);
+    // Fase 2: mandar el grupo completo en una sola petición al carrito remoto.
+    $added_items = [];
+
+    if (!empty($items_to_add)) {
+        error_log('[MUSEMENT] Cart add AJAX normalized group (' . count($items_to_add) . ' items): ' . wp_json_encode($items_to_add));
+
+        $added = musement_remote_cart_add_items_batch($items_to_add);
 
         if (is_wp_error($added)) {
-            error_log('[MUSEMENT] ⚠️ Carrito remoto falló para el tipo "' . $product_identifier . '": ' . $added->get_error_message());
+            error_log('[MUSEMENT] ⚠️ Carrito remoto falló para el grupo: ' . $added->get_error_message());
             $errors[] = $added->get_error_message();
-            continue;
-        }
+        } else {
+            foreach ($items_to_add as $index => $item) {
+                $item_participant_info = $participant_info_by_item[$index] ?? [];
 
-        if (!$added) {
-            $errors[] = sprintf(
-                /* translators: %s: nombre del tipo de entrada */
-                __('No se pudo copiar el tipo de entrada "%s" al carrito remoto de Musement.', 'musement-integration'),
-                $item['product_name'] ?? $product_identifier
-            );
-            continue;
-        }
+                if (!empty($item['remote_item_uuid']) && !empty($item_participant_info)) {
+                    $participants_update = musement_remote_cart_update_item_participants($item['remote_item_uuid'], $item_participant_info);
 
-        if (!empty($item['remote_item_uuid']) && !empty($item_participant_info)) {
-            $participants_update = musement_remote_cart_update_item_participants($item['remote_item_uuid'], $item_participant_info);
+                    if (is_wp_error($participants_update)) {
+                        $errors[] = $participants_update->get_error_message();
+                        continue;
+                    }
 
-            if (is_wp_error($participants_update)) {
-                $errors[] = $participants_update->get_error_message();
-                continue;
-            }
+                    if (is_array($participants_update)) {
+                        $item['remote_participants_update'] = $participants_update;
+                    }
+                }
 
-            if (is_array($participants_update)) {
-                $item['remote_participants_update'] = $participants_update;
+                $_SESSION['musement_cart'][] = $item;
+                $added_items[] = $item;
             }
         }
-
-        $_SESSION['musement_cart'][] = $item;
-        $added_items[] = $item;
     }
 
     // Si ningún tipo de entrada se pudo añadir, se informa como error total (comportamiento igual al original)

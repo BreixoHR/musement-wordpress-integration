@@ -702,6 +702,7 @@ function musement_certified_calendar_shortcode($atts)
                         state.selectedSlot = null;
                         state.selectedLanguage = null;
                         state.currentSlotProducts = [];
+                        state.slotMinBuy = 1;
                         state.allConfirmed = false;
                         document.getElementById('questions-' + widgetId).style.display = 'none';
                         loadSlots(widgetId);
@@ -779,11 +780,21 @@ function musement_certified_calendar_shortcode($atts)
             container.innerHTML = '<p class="calendar-loading">Cargando horarios...</p>';
             container.classList.add('visible');
 
+            // Los horarios de inventario en tiempo real pueden tardar varios segundos en
+            // responder. Si el usuario cambia de fecha antes de que llegue la respuesta,
+            // una petición anterior más lenta podía llegar después y repintar los horarios
+            // con datos de la fecha equivocada, dejando "state.selectedSlot" desincronizado
+            // con lo que el usuario veía en pantalla. Con este token solo se aplica la
+            // respuesta de la petición más reciente.
+            var requestDate = state.selectedDate;
+            var requestToken = {};
+            state._slotsRequestToken = requestToken;
+
             var data = new FormData();
             data.append('action', 'musement_day_availability');
             data.append('nonce', '<?php echo wp_create_nonce('musement_ajax'); ?>');
             data.append('uuid', state.uuid);
-            data.append('date', state.selectedDate);
+            data.append('date', requestDate);
 
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
                 method: 'POST',
@@ -791,6 +802,10 @@ function musement_certified_calendar_shortcode($atts)
             })
             .then(function(response) { return response.json(); })
             .then(function(response) {
+                if (state._slotsRequestToken !== requestToken || state.selectedDate !== requestDate) {
+                    return; // respuesta obsoleta: el usuario ya cambió de fecha
+                }
+
                 if (response.success) {
                     state.lastSlotsData = response.data;
                     renderSlots(widgetId, response.data);
@@ -799,6 +814,9 @@ function musement_certified_calendar_shortcode($atts)
                 }
             })
             .catch(function() {
+                if (state._slotsRequestToken !== requestToken || state.selectedDate !== requestDate) {
+                    return;
+                }
                 container.innerHTML = '<p style="color: #d63638; text-align: center; padding: 10px;">Error al cargar horarios</p>';
             });
         }
@@ -821,6 +839,7 @@ function musement_certified_calendar_shortcode($atts)
 
                 return {
                     id: p.product_id || p.product_identifier || p.id || p.uuid || '',
+                    type: p.type || 'musement',
                     name: p.name || p.title || 'Entrada',
                     price: priceValue,
                     priceFormatted: priceFormatted,
@@ -970,6 +989,7 @@ function musement_certified_calendar_shortcode($atts)
                         '" data-time="' + (slot.time || 'flexible') +
                         '" data-language="' + (language.code || '') +
                         '" data-language-name="' + (language.name || '') +
+                        '" data-min-buy="' + (slot.min_buy || 1) +
                         '" data-products-b64="' + productsB64 + '">';
                     html += '<span class="slot-time">🕐 ' + (slot.time || 'Horario flexible') + '</span>';
                     html += '<span class="slot-price">' + priceLabel + '</span>';
@@ -994,6 +1014,7 @@ function musement_certified_calendar_shortcode($atts)
                     state.selectedLanguage = this.dataset.lang || null;
                     state.selectedSlot = null;
                     state.currentSlotProducts = [];
+                    state.slotMinBuy = 1;
                     state.allConfirmed = false;
                     document.getElementById('questions-' + widgetId).style.display = 'none';
                     renderSlots(widgetId, state.lastSlotsData);
@@ -1026,11 +1047,20 @@ function musement_certified_calendar_shortcode($atts)
                     state.currentSlotProducts = products;
                     state.allConfirmed = false;
 
+                    // Algunos horarios (sobre todo inventario en tiempo real) exigen un
+                    // mínimo de participantes por reserva; si no se respeta, Musement
+                    // rechaza el carrito con PARTY_SIZE_NOT_RESPECTED.
+                    state.slotMinBuy = parseInt(this.dataset.minBuy, 10) || 1;
+                    if ((state.participantCount || 1) < state.slotMinBuy) {
+                        state.participantCount = state.slotMinBuy;
+                    }
+
                     // Precio de referencia (el precio real se calcula por participante según el tipo elegido)
                     if (products.length > 0) {
                         var minP = products.reduce(function(min, p) { return (min === null || p.price < min.price) ? p : min; }, null);
                         state._price = minP.price;
                         state._productIdentifier = minP.id;
+                        state._productType = minP.type;
                         state._productName = minP.name;
                     }
 
@@ -1151,6 +1181,7 @@ function musement_certified_calendar_shortcode($atts)
         function renderQuestions(widgetId, questions) {
             var content = document.getElementById('questions-content-' + widgetId);
             var currentCount = state.participantCount || 1;
+            var minBuy = state.slotMinBuy || 1;
 
             var html = '';
 
@@ -1162,6 +1193,9 @@ function musement_certified_calendar_shortcode($atts)
             html += '<span id="participant-count-' + widgetId + '" style="font-size: 20px; font-weight: 600; min-width: 40px; text-align: center;">' + currentCount + '</span>';
             html += '<button class="participant-btn" data-action="plus" data-product="' + widgetId + '">+</button>';
             html += '</div>';
+            if (minBuy > 1) {
+                html += '<div style="font-size: 12px; color: #666; margin-top: 6px;">Este horario exige un mínimo de ' + minBuy + ' participantes</div>';
+            }
             html += '<div style="font-size: 12px; color: #666; margin-top: 6px;">Cada participante debe completar su propia información</div>';
             html += '</div>';
             
@@ -1185,7 +1219,8 @@ function musement_certified_calendar_shortcode($atts)
                 btn.addEventListener('click', function() {
                     var action = this.dataset.action;
                     var currentCount = state.participantCount || 1;
-                    var newCount = action === 'plus' ? currentCount + 1 : Math.max(1, currentCount - 1);
+                    var minBuy = state.slotMinBuy || 1;
+                    var newCount = action === 'plus' ? currentCount + 1 : Math.max(minBuy, currentCount - 1);
                     
                     state.participantCount = newCount;
                     document.getElementById('participant-count-' + widgetId).textContent = newCount;
@@ -1514,6 +1549,7 @@ function musement_certified_calendar_shortcode($atts)
                 return {
                     items: [{
                         productIdentifier: state._productIdentifier || '',
+                        type: state._productType || 'musement',
                         productName: state._productName || state.name,
                         holderCode: '',
                         holderCodeNormalized: '',
@@ -1545,6 +1581,7 @@ function musement_certified_calendar_shortcode($atts)
                     if (!items[product.id]) {
                         items[product.id] = {
                             productIdentifier: product.id,
+                            type: product.type || 'musement',
                             productName: product.name,
                             holderCode: product.holderCode,
                             holderCodeNormalized: product.holderCodeNormalized,
@@ -1618,6 +1655,12 @@ function musement_certified_calendar_shortcode($atts)
                 return;
             }
 
+            var minBuyCheck = state.slotMinBuy || 1;
+            if ((state.participantCount || 1) < minBuyCheck) {
+                showMessage(widgetId, 'error', '❌ Este horario exige un mínimo de ' + minBuyCheck + ' participantes');
+                return;
+            }
+
             if (!state.allConfirmed) {
                 showMessage(widgetId, 'error', '❌ Confirma todos los participantes');
                 return;
@@ -1646,6 +1689,7 @@ function musement_certified_calendar_shortcode($atts)
                 date: state.selectedDate,
                 time: state.selectedSlot.time || '00:00',
                 product_identifier: mainItem.productIdentifier || '',
+                type: mainItem.type || 'musement',
                 product_name: mainItem.productName || state.name,
                 quantity: participantCount,
                 unit_price: mainItem.unitPrice,
