@@ -464,6 +464,59 @@ function musement_remote_get_order(string $order_uuid) {
 }
 
 /**
+ * Obtiene el detalle completo de un producto/actividad por su UUID.
+ *
+ * Se llamaba desde certified_calendar.php (musement_get_product_by_uuid) y desde
+ * ajax.php (musement_ajax_get_product_questions) pero la función nunca se había
+ * definido en ningún sitio del plugin -- cualquier página con el bloque de
+ * Gutenberg "Musement: Producto individual" (que siempre pasa uuid) terminaba en
+ * un error fatal de PHP ("Call to undefined function"), y el AJAX de preguntas
+ * del proveedor fallaba igual.
+ *
+ * @param string $uuid El UUID de la actividad en Musement
+ * @return array|WP_Error Los datos del producto o un error
+ */
+function musement_remote_get_product(string $uuid) {
+    $token = musement_get_access_token();
+
+    if (!$token || !$uuid) {
+        return new WP_Error('musement_missing_data', 'Falta el token o el UUID del producto.');
+    }
+
+    $endpoint = MUSEMENT_API_BASE_URL . '/api/v3/activities/' . rawurlencode($uuid);
+
+    $res = wp_remote_get($endpoint, [
+        'timeout' => 20,
+        'headers' => [
+            'Authorization' => 'Bearer ' . $token,
+            'Accept' => 'application/json',
+            'Accept-Language' => 'es-ES',
+            'X-Musement-Application' => MUSEMENT_APPLICATION,
+            'X-Musement-Currency' => 'EUR',
+            'X-Musement-Market' => 'es',
+            'X-Musement-Version' => '3.4.0',
+        ],
+    ]);
+
+    if (is_wp_error($res)) {
+        return $res;
+    }
+
+    $status = wp_remote_retrieve_response_code($res);
+    $body = json_decode(wp_remote_retrieve_body($res), true);
+
+    if ($status < 200 || $status >= 300) {
+        return new WP_Error(
+            'musement_get_product_failed',
+            'Error al obtener el producto',
+            ['status' => $status, 'body' => $body]
+        );
+    }
+
+    return is_array($body) ? $body : [];
+}
+
+/**
  * Extrae las URLs de los vouchers de una orden
  * 
  * @param array $order_data Los datos de la orden obtenidos de la API

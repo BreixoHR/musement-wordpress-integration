@@ -1195,7 +1195,15 @@
     document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('.musement-widget').forEach(initWidget);
         document.querySelectorAll('[data-musement-checkout]').forEach(initCheckout);
-        ensureCartBar();
+
+        // frontend.js se carga en TODAS las páginas (wp_enqueue_scripts no lo
+        // limita a ninguna página en concreto), así que antes esto metía la barra
+        // flotante de carrito en cualquier sitio, incluida la home. Solo debe
+        // aparecer donde de verdad se puede añadir algo al carrito: la página del
+        // calendario de un producto ([musement_certified_calendar]).
+        if (document.querySelector('.musement-certified-calendar-wrapper')) {
+            ensureCartBar();
+        }
     });
 
     function money(value, currency) {
