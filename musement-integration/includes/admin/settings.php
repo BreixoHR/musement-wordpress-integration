@@ -272,13 +272,18 @@ function musement_field_stripe_webhook_secret() {
 function musement_products_field() {
     $products = get_option('musement_products_cache', []);
     $margins = get_option('musement_product_margins', []); // Cambiamos a margins
-    
+
+    // Antes este botón solo se imprimía cuando la caché estaba vacía (dentro del
+    // "if" de más abajo) -- en cuanto había algún producto cacheado, aunque fuera
+    // de una ciudad antigua, el botón desaparecía del todo y no había forma de
+    // volver a sincronizar desde la interfaz. Ahora se muestra siempre.
+    echo '<p><a href="' . esc_url(admin_url('admin.php?page=musement-settings&sync_products=1')) . '" class="button">Sincronizar productos ahora</a></p>';
+
     if (empty($products)) {
-        echo '<div class="notice notice-warning"><p>No hay productos disponibles. Selecciona una ciudad primero y guarda los cambios.</p></div>';
-        echo '<a href="' . admin_url('admin.php?page=musement-settings&sync_products=1') . '" class="button">Sincronizar productos ahora</a>';
+        echo '<div class="notice notice-warning"><p>No hay productos disponibles. Selecciona una ciudad primero, guarda los cambios y pulsa "Sincronizar productos ahora".</p></div>';
         return;
     }
-    
+
     echo '<div class="notice notice-info">';
     echo '<p>📌 <strong>Configuración de márgenes</strong>: Introduce el porcentaje de margen que quieres aplicar sobre el precio original de Musement.</p>';
     echo '<p>💡 El precio final se calculará automáticamente como: <strong>Precio original + (Precio original × Margen / 100)</strong></p>';
