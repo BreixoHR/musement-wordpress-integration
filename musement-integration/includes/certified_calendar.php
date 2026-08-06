@@ -6,25 +6,63 @@ if (!defined('ABSPATH')) {
 
 /**
  * Shortcode para calendario de disponibilidad con participantes
- * Uso: [musement_certified_calendar product="pompidou"]
+ *
+ * Uso recomendado, para cualquier producto real (no solo los de demo) -- pega
+ * el UUID de la actividad en Musement:
  *       [musement_certified_calendar uuid="165fcd0d-2046-11e7-9cc9-06a7e332783f"]
+ *
+ * También admite, por compatibilidad, los dos nombres de demo/certificación
+ * definidos en musement_certified_products() ("pompidou", "knossos"):
+ *       [musement_certified_calendar product="pompidou"]
+ *
+ * Y si en "product" se pone directamente un UUID (que es lo que la mayoría de
+ * gente probablemente intente, al ser el atributo "obvio" del shortcode), se
+ * trata igual que si se hubiera puesto en "uuid" -- antes esto daba siempre
+ * "producto no encontrado", porque "product" solo reconocía esos dos nombres.
  */
 function musement_certified_calendar_shortcode($atts)
 {
     // Obtener atributos
     $atts = shortcode_atts([
-        'product' => 'pompidou',
+        'product' => '',
         'uuid' => '',
         'title' => '',
         'description' => '',
         'price' => 0,
         'currency' => 'EUR',
         'image' => '',
-        'show_details' => 'true'
+        'show_details' => 'true',
+        'requires_participants' => 'true',
+        'has_extra_data' => 'false',
     ], $atts, 'musement_certified_calendar');
 
-    // Si se proporciona UUID, buscar el producto
-    if (!empty($atts['uuid'])) {
+    $demo_products = musement_certified_products();
+    $demo_product = null;
+
+    if (empty($atts['uuid']) && !empty($atts['product'])) {
+        if (isset($demo_products[$atts['product']])) {
+            // "product" es uno de los nombres de demo conocidos.
+            $demo_product = $demo_products[$atts['product']];
+            $atts['uuid'] = $demo_product['uuid'];
+        } else {
+            // "product" no es un nombre de demo -- se asume que es un UUID.
+            $atts['uuid'] = $atts['product'];
+        }
+    }
+
+    if ($demo_product) {
+        $atts['title'] = $demo_product['title'] ?? $atts['title'];
+        $atts['description'] = $demo_product['description'] ?? $atts['description'];
+        $atts['price'] = $demo_product['price'] ?? $atts['price'];
+        $atts['currency'] = $demo_product['currency'] ?? $atts['currency'];
+        $atts['image'] = $demo_product['image'] ?? $atts['image'];
+        // Antes estos dos campos del producto de demo nunca se copiaban a $atts
+        // (ni "requires_participants" ni "has_extra_data" estaban registrados en
+        // shortcode_atts(), así que se perdían siempre y quedaba el valor por
+        // defecto pasara lo que pasara).
+        $atts['requires_participants'] = !empty($demo_product['requires_participants']) ? 'true' : 'false';
+        $atts['has_extra_data'] = !empty($demo_product['has_extra_data']) ? 'true' : 'false';
+    } elseif (!empty($atts['uuid'])) {
         $product_data = musement_get_product_by_uuid($atts['uuid']);
         if ($product_data) {
             $atts['title'] = $product_data['title'] ?? $atts['title'];
@@ -32,18 +70,6 @@ function musement_certified_calendar_shortcode($atts)
             $atts['price'] = $product_data['price'] ?? $atts['price'];
             $atts['currency'] = $product_data['currency'] ?? $atts['currency'];
             $atts['image'] = $product_data['image'] ?? $atts['image'];
-        }
-    } else {
-        // Obtener producto por nombre
-        $products = musement_certified_products();
-        if (isset($products[$atts['product']])) {
-            $product = $products[$atts['product']];
-            $atts['uuid'] = $product['uuid'];
-            $atts['title'] = $product['title'] ?? $atts['title'];
-            $atts['description'] = $product['description'] ?? $atts['description'];
-            $atts['price'] = $product['price'] ?? $atts['price'];
-            $atts['currency'] = $product['currency'] ?? $atts['currency'];
-            $atts['image'] = $product['image'] ?? $atts['image'];
         }
     }
 
@@ -71,8 +97,8 @@ function musement_certified_calendar_shortcode($atts)
          data-currency="<?php echo esc_attr($atts['currency']); ?>"
          data-image="<?php echo esc_url($atts['image']); ?>"
          data-show-details="<?php echo esc_attr($atts['show_details']); ?>"
-         data-requires-participants="<?php echo esc_attr($atts['requires_participants'] ?? 'true'); ?>"
-         data-has-extra-data="<?php echo esc_attr($atts['has_extra_data'] ?? 'false'); ?>">
+         data-requires-participants="<?php echo esc_attr($atts['requires_participants']); ?>"
+         data-has-extra-data="<?php echo esc_attr($atts['has_extra_data']); ?>">
         <style>
             .musement-certified-calendar-wrapper .calendar-header {
                 text-align: center;
