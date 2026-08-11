@@ -8,9 +8,26 @@ add_action('init', 'musement_cart_start_session', 1);
 
 function musement_cart_start_session(): void
 {
+    // 🧪 Diagnóstico de lentitud: esta función corre en el hook "init", es decir
+    // en TODAS las peticiones (páginas y AJAX), y puede disparar una llamada
+    // real a Musement (musement_create_remote_cart()) antes de que se ejecute
+    // cualquier otra lógica -- incluida musement_day_availability(). Además,
+    // como no hay ningún session_write_close() en el plugin, PHP mantiene
+    // bloqueado el fichero de sesión mientras dure la petición, así que
+    // peticiones concurrentes de la misma sesión se ejecutan en fila, no en
+    // paralelo. Estos logs sirven para confirmar si musement_create_remote_cart()
+    // se dispara una sola vez por sesión (normal) o se repite en cada petición
+    // (causa probable de los 25s medidos al pedir horarios).
+    $t0 = microtime(true);
+    $had_session = (bool) session_id();
+
     if (!session_id() && !headers_sent()) {
         session_start();
     }
+
+    $session_hash = session_id() ? substr(md5(session_id()), 0, 8) : 'sin-sesion';
+    $ajax_action = sanitize_text_field($_POST['action'] ?? $_GET['action'] ?? '');
+    error_log('[MUSEMENT][SIMULADO] 🔎 start_session: session=' . $session_hash . ' habia_sesion_previa=' . ($had_session ? 'si' : 'no') . ' action=' . $ajax_action);
 
     if (!isset($_SESSION['musement_cart']) || !is_array($_SESSION['musement_cart'])) {
         $_SESSION['musement_cart'] = [];
@@ -20,13 +37,22 @@ function musement_cart_start_session(): void
     $valid_uuid = $remote['uuid'] ?? null;
 
     if (!$valid_uuid) {
+        error_log('[MUSEMENT][SIMULADO] ⚠️ start_session: NO hay carrito remoto en sesión (' . $session_hash . '), creando uno nuevo -- llamada real a Musement');
+        $t_cart0 = microtime(true);
 
         $new = musement_create_remote_cart();
+
+        $t_cart1 = microtime(true);
+        error_log('[MUSEMENT][SIMULADO] ⏱️ start_session: musement_create_remote_cart() tardó ' . round($t_cart1 - $t_cart0, 2) . 's (session=' . $session_hash . ')');
 
         if (is_array($new) && !empty($new['uuid'])) {
             $_SESSION['musement_remote_cart'] = $new;
         }
+    } else {
+        error_log('[MUSEMENT][SIMULADO] ✅ start_session: carrito remoto ya existía en sesión (' . $session_hash . '), uuid=' . $valid_uuid);
     }
+
+    error_log('[MUSEMENT][SIMULADO] ⏱️ start_session total: ' . round(microtime(true) - $t0, 3) . 's (session=' . $session_hash . ', action=' . $ajax_action . ')');
 }
 
 function musement_create_remote_cart(): ?array

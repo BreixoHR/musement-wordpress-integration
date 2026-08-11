@@ -643,6 +643,20 @@ function musement_certified_calendar_shortcode($atts)
         var widgetId = '<?php echo esc_js($widget_id); ?>';
         var widget = document.getElementById(widgetId);
         if (!widget) return;
+
+        // Si el shortcode se procesa más de una vez en la misma carga de página
+        // (habitual con plugins de SEO/algunos temas que pasan el contenido por
+        // "the_content" más de una vez), este <script> se ejecuta dos o más
+        // veces y crea "state" independientes con listeners duplicados sobre el
+        // mismo botón, y cada uno dispara su propio loadMonthAvailability() --
+        // esto es lo que causaba la ráfaga de peticiones a musement_month_availability
+        // (y de rebote, el error fantasma "Selecciona fecha y horario"). Marcamos
+        // el elemento para que solo se inicialice una vez.
+        if (widget.dataset.musementInitialized === 'true') {
+            return;
+        }
+        widget.dataset.musementInitialized = 'true';
+
         console.log('musement: certified calendar init for', widgetId);
         var uuid = widget.dataset.uuid;
         var productKey = widget.dataset.product;

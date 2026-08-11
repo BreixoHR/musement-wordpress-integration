@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: Musement Integration
- * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 2.12.000
+ * Plugin Name: Musement Integration TEST
+ * Description: [BUILD DE PRUEBA -- pago simulado] Integracion basica con Musement para mostrar tours y disponibilidad.
+ * Version: 2.12.003
  * Author: Breixo A. Herrera
  * Text Domain: musement-integration
  */
@@ -11,7 +11,26 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.000');
+// ============================================================================
+// 🧪 BUILD DE PRUEBA -- PAGO SIMULADO (no tocar en la version de produccion)
+// ============================================================================
+// Con esto activo, musement_create_order() NO llama a Stripe ni crea/confirma
+// nada en Musement: monta una orden falsa en memoria a partir del carrito
+// local y sigue exactamente el mismo camino de siempre para construir y
+// enviar el payload OCTO a Salesforce (mismo endpoint y mismo formato que usa
+// frontend.js) -- para poder probar que Salesforce acepta el envio sin gastar
+// un pago real ni crear una reserva real en Musement.
+//
+// Los pedidos simulados llevan uuid con el prefijo "TESTSIM-" para poder
+// identificarlos (y borrarlos) facilmente en Salesforce.
+//
+// IMPORTANTE: este plugin NO puede estar activo a la vez que "Musement
+// Integration" (produccion) -- declaran las mismas funciones/constantes y
+// WordPress fallaria con un error fatal de "cannot redeclare function".
+// Desactiva el plugin de produccion antes de activar este.
+define('MUSEMENT_SIMULATE_PAYMENT', true);
+
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.003');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
@@ -252,6 +271,98 @@ function musement_checkout_page_maybe_update_title(): void
 add_action('wp_ajax_musement_create_order', 'musement_create_order');
 add_action('wp_ajax_nopriv_musement_create_order', 'musement_create_order');
 
+/**
+ * 🧪 Vouchers falsos (URL con formato valido pero no descargable de verdad)
+ * para que el flujo normal de fusion de PDF en el frontend siga su camino
+ * habitual: si la descarga falla, el propio codigo ya sabe mandar el aviso a
+ * Salesforce igualmente con las URLs individuales, sin PDF fusionado.
+ */
+function musement_simulate_voucher_url(string $order_uuid, int $index): string
+{
+    return 'https://example.com/musement-test-voucher-' . $order_uuid . '-' . ($index + 1) . '.pdf';
+}
+
+/**
+ * 🧪 Construye una orden "de Musement" falsa a partir del carrito local, para
+ * el modo MUSEMENT_SIMULATE_PAYMENT. Tiene la misma forma que la respuesta
+ * real de musement_remote_get_order() en los campos que usa
+ * musement_build_octo_payload(), incluido un voucher por item desde el
+ * arranque (igual que si Musement lo hubiera entregado al instante), para que
+ * el payload OCTO resultante sea indistinguible en forma de uno real -- solo
+ * cambian los valores (uuid con prefijo "TESTSIM-", URLs de relleno).
+ */
+function musement_simulate_order_from_cart(array $items, array $summary, array $customer_data, string $order_uuid): array
+{
+    $order_items = [];
+
+    foreach ($items as $index => $item) {
+        $quantity = max(1, (int) ($item['quantity'] ?? 1));
+        $unit_price = (float) ($item['unit_price'] ?? $item['musement_price'] ?? 0);
+        $currency = $item['currency'] ?? ($summary['currency'] ?? 'EUR');
+        $date = trim(($item['date'] ?? '') . ' ' . ($item['time'] ?? ''));
+        $item_uuid = 'TESTSIM-ITEM-' . ($index + 1) . '-' . substr(md5($order_uuid . $index), 0, 8);
+
+        $order_items[] = [
+            'uuid' => $item_uuid,
+            'quantity' => $quantity,
+            'retail_price_in_order_currency' => [
+                'value' => round($unit_price * $quantity, 2),
+                'currency' => $currency,
+            ],
+            'product' => [
+                'id' => $item['product_identifier'] ?? '',
+                'activity_uuid' => $item['activity_uuid'] ?? '',
+                'title' => $item['title'] ?? ($item['product_name'] ?? ''),
+                'date' => $date,
+                'price_tag' => [
+                    'ticket_holder_code' => $item['holder_code'] ?? '',
+                    'ticket_holder' => $item['product_name'] ?? '',
+                    'price_feature_code' => $item['option_feature_code'] ?: 'entrance',
+                    'price_feature' => $item['option_name'] ?: 'Entrada',
+                ],
+            ],
+            'vouchers' => [
+                ['url' => musement_simulate_voucher_url($order_uuid, $index)],
+            ],
+        ];
+    }
+
+    return [
+        'uuid' => $order_uuid,
+        'identifier' => $order_uuid,
+        'status' => 'CONFIRMED',
+        'total_price' => [
+            'value' => (float) ($summary['total'] ?? 0),
+            'currency' => $summary['currency'] ?? 'EUR',
+        ],
+        'customer' => [
+            'firstname' => $customer_data['first_name'] ?? '',
+            'lastname' => $customer_data['last_name'] ?? '',
+            'email' => $customer_data['email'] ?? '',
+        ],
+        'items' => $order_items,
+    ];
+}
+
+/**
+ * 🧪 Vouchers falsos con el mismo formato que musement_extract_vouchers_from_order(),
+ * para el paso de sondeo de estado (musement_check_order_status).
+ */
+function musement_simulate_vouchers_from_order(array $order): array
+{
+    $vouchers = [];
+
+    foreach ($order['items'] ?? [] as $index => $item) {
+        $vouchers[] = [
+            'activity_name' => $item['product']['title'] ?? ('Producto simulado ' . ($index + 1)),
+            'url' => $item['vouchers'][0]['url'] ?? musement_simulate_voucher_url($order['uuid'] ?? 'TESTSIM', $index),
+            'status' => 'CONFIRMED',
+        ];
+    }
+
+    return $vouchers;
+}
+
 function musement_create_order() {
 
 
@@ -324,121 +435,140 @@ function musement_create_order() {
         return;
     }
 
-    $remote_sync = musement_remote_cart_sync_from_local();
-    if (is_wp_error($remote_sync)) {
-        delete_transient($order_lock_key);
-        musement_order_lock_release($mysql_lock_name);
-        wp_send_json_error([
-            'message' => $remote_sync->get_error_message(),
-            'remote_error' => $remote_sync->get_error_data(),
-        ], 502);
-        return;
-    }
+    if (defined('MUSEMENT_SIMULATE_PAYMENT') && MUSEMENT_SIMULATE_PAYMENT) {
+        // 🧪 Modo simulado: no se sincroniza el carrito remoto de Musement, no
+        // se verifica nada contra Stripe, no se crea ni se confirma ninguna
+        // orden real en Musement. Se monta una orden falsa a partir del
+        // carrito local para poder construir y enviar el payload OCTO real a
+        // Salesforce, igual que en el flujo normal.
+        $order_uuid = 'TESTSIM-' . strtoupper(substr(md5($cart_uuid . microtime()), 0, 10));
 
-    $cart_uuid = musement_remote_cart_get_id() ?: $cart_uuid;
-    
+        error_log('[MUSEMENT][SIMULADO] Creando orden simulada ' . $order_uuid . ' a partir del carrito local (sin Stripe ni Musement)');
 
-    $customer_update = musement_remote_cart_update_customer($customer_data);
-    if (!$customer_update) {
-        // No fallamos aquí, solo logueamos
-        error_log('[MUSEMENT] ⚠️ Could not update customer data in remote cart');
-    }
+        $order = musement_simulate_order_from_cart($items, $summary, $customer_data, $order_uuid);
+        $vouchers = musement_simulate_vouchers_from_order($order);
+        $voucher_urls = array_column($vouchers, 'url');
 
-    // Recogemos del formulario los datos del cliente
-    $customer_data = [
-        'first_name' => sanitize_text_field($_POST['first_name'] ?? ''),
-        'last_name' => sanitize_text_field($_POST['last_name'] ?? ''),
-        'email' => sanitize_email($_POST['email'] ?? ''),
-    ];
+        $octo_payload = musement_build_octo_payload($order, $customer_data, $voucher_urls);
+        $_SESSION['musement_octo_payload'] = $octo_payload;
+        $_SESSION['musement_simulated_orders'][$order_uuid] = $order;
+    } else {
+        $remote_sync = musement_remote_cart_sync_from_local();
+        if (is_wp_error($remote_sync)) {
+            delete_transient($order_lock_key);
+            musement_order_lock_release($mysql_lock_name);
+            wp_send_json_error([
+                'message' => $remote_sync->get_error_message(),
+                'remote_error' => $remote_sync->get_error_data(),
+            ], 502);
+            return;
+        }
 
-    // Verificamos el pago DIRECTAMENTE contra Stripe antes de crear u homologar
-    // ninguna reserva en Musement. Antes de esto, cualquiera podía llamar a este
-    // endpoint (es wp_ajax_nopriv) con un cart_uuid válido y conseguir una reserva
-    // confirmada con vouchers sin haber pagado nunca -- este check es lo que lo impide.
-    $payment_check = musement_stripe_verify_payment_for_cart(
-        $payment_intent_id,
-        $cart_uuid,
-        (float) ($summary['total'] ?? 0),
-        (string) ($summary['currency'] ?? 'EUR')
-    );
+        $cart_uuid = musement_remote_cart_get_id() ?: $cart_uuid;
 
-    if (is_wp_error($payment_check)) {
-        delete_transient($order_lock_key);
-        musement_order_lock_release($mysql_lock_name);
-        error_log('[MUSEMENT] ❌ Pago no verificado para carrito ' . $cart_uuid . ': ' . $payment_check->get_error_message());
-        wp_send_json_error([
-            'message' => $payment_check->get_error_message(),
-        ], 402);
-        return;
-    }
 
-    // 1. Crear la orden en Musement (estado PENDING) -- o recuperar la que ya se
-    //    creó en un intento anterior para este mismo carrito. Si no hiciéramos esto,
-    //    un fallo DESPUÉS de crear la orden (p.ej. al pedir su detalle o construir el
-    //    payload) haría que un reintento volviera a llamar a musement_remote_create_order(),
-    //    y Musement no rechaza la repetición: le añade más bookings a la misma orden.
-    $order_created_key = 'musement_order_created_' . md5($cart_uuid);
-    $existing_order_uuid = get_transient($order_created_key);
+        $customer_update = musement_remote_cart_update_customer($customer_data);
+        if (!$customer_update) {
+            // No fallamos aquí, solo logueamos
+            error_log('[MUSEMENT] ⚠️ Could not update customer data in remote cart');
+        }
 
-    $order = $existing_order_uuid
-        ? musement_remote_get_order($existing_order_uuid)
-        : musement_remote_create_order($cart_uuid);
+        // Recogemos del formulario los datos del cliente
+        $customer_data = [
+            'first_name' => sanitize_text_field($_POST['first_name'] ?? ''),
+            'last_name' => sanitize_text_field($_POST['last_name'] ?? ''),
+            'email' => sanitize_email($_POST['email'] ?? ''),
+        ];
 
-    if (is_wp_error($order)) {
-        delete_transient($order_lock_key);
-        musement_order_lock_release($mysql_lock_name);
-        wp_send_json_error(['message' => $order->get_error_message()]);
-        return;
-    }
+        // Verificamos el pago DIRECTAMENTE contra Stripe antes de crear u homologar
+        // ninguna reserva en Musement. Antes de esto, cualquiera podía llamar a este
+        // endpoint (es wp_ajax_nopriv) con un cart_uuid válido y conseguir una reserva
+        // confirmada con vouchers sin haber pagado nunca -- este check es lo que lo impide.
+        $payment_check = musement_stripe_verify_payment_for_cart(
+            $payment_intent_id,
+            $cart_uuid,
+            (float) ($summary['total'] ?? 0),
+            (string) ($summary['currency'] ?? 'EUR')
+        );
 
-    // 2. PASO NUEVO: ¡Ya tenemos el pago! Avisamos a Musement.
-    $order_uuid = $order['uuid'] ?? '';
+        if (is_wp_error($payment_check)) {
+            delete_transient($order_lock_key);
+            musement_order_lock_release($mysql_lock_name);
+            error_log('[MUSEMENT] ❌ Pago no verificado para carrito ' . $cart_uuid . ': ' . $payment_check->get_error_message());
+            wp_send_json_error([
+                'message' => $payment_check->get_error_message(),
+            ], 402);
+            return;
+        }
 
-    // Guardamos el order_uuid en cuanto lo tenemos -- antes de marcar el pago, pedir
-    // el detalle o construir el payload -- para que si algo falla a partir de aquí,
-    // el siguiente intento reutilice esta orden en vez de crear otra.
-    if ($order_uuid) {
-        set_transient($order_created_key, $order_uuid, 12 * HOUR_IN_SECONDS);
-    }
+        // 1. Crear la orden en Musement (estado PENDING) -- o recuperar la que ya se
+        //    creó en un intento anterior para este mismo carrito. Si no hiciéramos esto,
+        //    un fallo DESPUÉS de crear la orden (p.ej. al pedir su detalle o construir el
+        //    payload) haría que un reintento volviera a llamar a musement_remote_create_order(),
+        //    y Musement no rechaza la repetición: le añade más bookings a la misma orden.
+        $order_created_key = 'musement_order_created_' . md5($cart_uuid);
+        $existing_order_uuid = get_transient($order_created_key);
 
-    $vouchers = [];
-    $voucher_urls = [];
+        $order = $existing_order_uuid
+            ? musement_remote_get_order($existing_order_uuid)
+            : musement_remote_create_order($cart_uuid);
 
-    if ($order_uuid) {
-        // Esta es la función que debe llamar al endpoint de "no-payment flow"
-        $payment_confirmation = musement_remote_mark_order_paid($order_uuid);
+        if (is_wp_error($order)) {
+            delete_transient($order_lock_key);
+            musement_order_lock_release($mysql_lock_name);
+            wp_send_json_error(['message' => $order->get_error_message()]);
+            return;
+        }
 
-        
+        // 2. PASO NUEVO: ¡Ya tenemos el pago! Avisamos a Musement.
+        $order_uuid = $order['uuid'] ?? '';
 
-        if (is_wp_error($payment_confirmation)) {
-            // Es crucial loguear este error para investigarlo.
-            error_log('[MUSEMENT] Error al confirmar pago de orden ' . $order_uuid . ': ' . $payment_confirmation->get_error_message());
-            // Podrías devolver un error aquí, o manejarlo internamente.
-        } else {
-            // ¡Perfecto! La orden ahora está confirmada.
-            $updated_order = musement_remote_get_order($order_uuid);
+        // Guardamos el order_uuid en cuanto lo tenemos -- antes de marcar el pago, pedir
+        // el detalle o construir el payload -- para que si algo falla a partir de aquí,
+        // el siguiente intento reutilice esta orden en vez de crear otra.
+        if ($order_uuid) {
+            set_transient($order_created_key, $order_uuid, 12 * HOUR_IN_SECONDS);
+        }
 
-            if(is_wp_error($updated_order)) {
-                error_log('[MUSEMENT] Error al obtener orden actualizada ' . $order_uuid . ': ' . $updated_order->get_error_message());
+        $vouchers = [];
+        $voucher_urls = [];
+
+        if ($order_uuid) {
+            // Esta es la función que debe llamar al endpoint de "no-payment flow"
+            $payment_confirmation = musement_remote_mark_order_paid($order_uuid);
+
+
+
+            if (is_wp_error($payment_confirmation)) {
+                // Es crucial loguear este error para investigarlo.
+                error_log('[MUSEMENT] Error al confirmar pago de orden ' . $order_uuid . ': ' . $payment_confirmation->get_error_message());
+                // Podrías devolver un error aquí, o manejarlo internamente.
             } else {
-                $vouchers = musement_extract_vouchers_from_order($updated_order);
+                // ¡Perfecto! La orden ahora está confirmada.
+                $updated_order = musement_remote_get_order($order_uuid);
 
-                foreach ($vouchers as $voucher) {
-                    if (!empty($voucher['url'])) {
-                        $voucher_urls[] = $voucher['url'];
+                if(is_wp_error($updated_order)) {
+                    error_log('[MUSEMENT] Error al obtener orden actualizada ' . $order_uuid . ': ' . $updated_order->get_error_message());
+                } else {
+                    $vouchers = musement_extract_vouchers_from_order($updated_order);
+
+                    foreach ($vouchers as $voucher) {
+                        if (!empty($voucher['url'])) {
+                            $voucher_urls[] = $voucher['url'];
+                        }
                     }
+
+                    $order = $updated_order; // Actualizamos la orden con los datos confirmados.
                 }
 
-                $order = $updated_order; // Actualizamos la orden con los datos confirmados.
+                error_log('[MUSEMENT] Pago confirmado para orden ' . $order_uuid);
+                // Actualiza el estado en la respuesta para que el frontend sepa que fue exitoso.
+                $order['status'] = 'CONFIRMED';
+
+                //$octo_payload = musement_build_octo_payload($order, $customer_data);
+                $octo_payload = musement_build_octo_payload($order, $customer_data, $voucher_urls);
+                $_SESSION['musement_octo_payload'] = $octo_payload; // Guardamos el payload en sesión para usarlo después en el webhook de Ventrata.
             }
-
-            error_log('[MUSEMENT] Pago confirmado para orden ' . $order_uuid);
-            // Actualiza el estado en la respuesta para que el frontend sepa que fue exitoso.
-            $order['status'] = 'CONFIRMED'; 
-
-            //$octo_payload = musement_build_octo_payload($order, $customer_data);
-            $octo_payload = musement_build_octo_payload($order, $customer_data, $voucher_urls);
-            $_SESSION['musement_octo_payload'] = $octo_payload; // Guardamos el payload en sesión para usarlo después en el webhook de Ventrata.
         }
     }
 
@@ -475,9 +605,36 @@ function musement_check_order_status() {
         wp_send_json_error(['message' => 'Falta el UUID de la orden']);
         return;
     }
-    
+
+    // 🧪 Orden simulada: no hay nada real que consultar en Musement, devolvemos
+    // directamente el estado y los vouchers falsos generados al crearla.
+    if (defined('MUSEMENT_SIMULATE_PAYMENT') && MUSEMENT_SIMULATE_PAYMENT && strpos($order_uuid, 'TESTSIM-') === 0) {
+        $simulated_order = $_SESSION['musement_simulated_orders'][$order_uuid] ?? null;
+
+        if (!$simulated_order) {
+            wp_send_json_error(['message' => 'Orden simulada no encontrada en sesión']);
+            return;
+        }
+
+        $items_status = array_map(function ($item) {
+            return [
+                'name' => $item['product']['title'] ?? 'Actividad',
+                'status' => 'CONFIRMED',
+                'max_confirmation_time' => null,
+            ];
+        }, $simulated_order['items'] ?? []);
+
+        wp_send_json_success([
+            'order_status' => 'CONFIRMED',
+            'items_status' => $items_status,
+            'vouchers' => musement_simulate_vouchers_from_order($simulated_order),
+            'order_uuid' => $order_uuid,
+        ]);
+        return;
+    }
+
     error_log('[MUSEMENT] Consultando orden: ' . $order_uuid);
-    
+
     // Obtener orden de Musement usando tu función existente
     $order = musement_remote_get_order($order_uuid);
     
@@ -641,5 +798,14 @@ add_action('wp_enqueue_scripts', function () {
         'defaultDate' => current_time('Y-m-d'),
         'checkoutUrl' => apply_filters('musement_checkout_url', musement_checkout_url()),
         'price' => get_option('musement_product_price', 0),
+        // 🧪 Si defines MUSEMENT_SALES_TEST_ENDPOINT (p.ej. en wp-config.php) con
+        // la URL de un sandbox de Salesforce, el envio final de esta build de
+        // prueba ira ahi en vez del endpoint de produccion que frontend.js trae
+        // por defecto. Dejalo sin definir para probar contra el endpoint real.
+        'salesEndpointOverride' => defined('MUSEMENT_SALES_TEST_ENDPOINT') ? MUSEMENT_SALES_TEST_ENDPOINT : '',
+        // 🧪 Con esto a true, el checkout no llama a Stripe: usa un payment_intent_id
+        // de relleno y va directo a crear la reserva (que a su vez se simula en el
+        // backend gracias a MUSEMENT_SIMULATE_PAYMENT).
+        'simulatePayment' => defined('MUSEMENT_SIMULATE_PAYMENT') ? (bool) MUSEMENT_SIMULATE_PAYMENT : false,
     ]);
 });

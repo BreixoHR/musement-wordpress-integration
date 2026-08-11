@@ -789,6 +789,9 @@ function musement_send_pdf_to_endpoint() {
     error_log('[MUSEMENT] 📤 Enviando payload al endpoint');
     error_log('[MUSEMENT] 📤 Order UUID: ' . $order_uuid);
     error_log('[MUSEMENT] 📤 Endpoint: ' . $endpoint_url);
+    // 🧪 Build de prueba: payload completo tal cual se manda a Salesforce, para
+    // poder revisarlo en musement-debug.log sin depender de la consola del navegador.
+    error_log('[MUSEMENT][SIMULADO] 📦 Payload completo: ' . wp_json_encode($payload, JSON_PRETTY_PRINT));
 
     if (!$order_uuid || !$endpoint_url) {
         wp_send_json_error(['message' => 'Faltan parámetros']);

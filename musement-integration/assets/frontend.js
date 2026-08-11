@@ -1211,6 +1211,16 @@
         if (document.querySelector('.musement-certified-calendar-wrapper')) {
             ensureCartBar();
         }
+
+        // MUSEMENT.cartUuid hace falta en CUALQUIER página con checkout, no solo
+        // en el calendario -- antes solo se rellenaba dentro de ensureCartBar(),
+        // así que en la página de checkout siempre quedaba vacío y el botón
+        // "Pagar" fallaba con "No se encontró el carrito" incluso con productos
+        // ya añadidos. Se pide aparte (sin la barra flotante) si no se pidió ya
+        // arriba.
+        if (!document.querySelector('.musement-certified-calendar-wrapper')) {
+            ensureCartUuid();
+        }
     });
 
     function money(value, currency) {
@@ -1232,6 +1242,13 @@
         }
     }
 
+    function ensureCartUuid() {
+        return post('musement_remote_cart_get').then(function (json) {
+            console.log("MUSEMENT REMOTE CART 168 : ", json);
+            MUSEMENT.cartUuid = json && json.data ? json.data.uuid : MUSEMENT.cartUuid;
+        });
+    }
+
     function ensureCartBar() {
         if (document.querySelector('.musement-cart-bar')) {
             return;
@@ -1245,10 +1262,7 @@
             '<a class="musement-cart-bar__checkout" href="' + (MUSEMENT.checkoutUrl || '#') + '">Checkout</a>';
         document.body.appendChild(bar);
 
-        post('musement_remote_cart_get').then(function (json) {
-            console.log("MUSEMENT REMOTE CART 168 : ", json);
-            MUSEMENT.cartUuid = json.data.uuid;
-        });
+        ensureCartUuid();
 
         post('musement_cart_get').then(function (json) {
 
@@ -1596,7 +1610,13 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
      */
     function sendPdfAsFormData(payload) {
         console.log('📤 Enviando peticion a salesforce desde el backend...');
-    
+
+        // 🧪 Build de prueba: si se definió MUSEMENT_SALES_TEST_ENDPOINT en PHP,
+        // el envío va ahí en vez de al endpoint de producción.
+        var salesEndpoint = (typeof MUSEMENT !== 'undefined' && MUSEMENT.salesEndpointOverride)
+            ? MUSEMENT.salesEndpointOverride
+            : 'https://example.my.salesforce-sites.com/services/apexrest/Booking/Musement';
+
         // 🔥 En lugar de enviar el PDF directamente, pedimos al backend que lo envíe
         fetch(MUSEMENT.ajax, {
             method: 'POST',
@@ -1605,7 +1625,7 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                 action: 'musement_send_pdf_to_endpoint',
                 nonce: MUSEMENT.nonce,
                 order_uuid: orderUuid,
-                endpoint_url: 'https://example.my.salesforce-sites.com/services/apexrest/Booking/Ventrata',
+                endpoint_url: salesEndpoint,
                 payload: JSON.stringify(payload)
             })
         })
@@ -1786,8 +1806,10 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
             const submit = form.querySelector('button[type="submit"]');
             const payload = {};
 
-            if (checkout._stripePayment) {
-                status.textContent = 'Confirmando pago...';
+            const musementSimulatePayment = (typeof MUSEMENT !== 'undefined' && MUSEMENT.simulatePayment);
+
+            if (checkout._stripePayment || musementSimulatePayment) {
+                status.textContent = musementSimulatePayment ? '🧪 [PRUEBA] Simulando pago...' : 'Confirmando pago...';
                 submit.disabled = true;
 
                 function createMusementOrderAfterPayment(checkout, cartUuid, paymentIntentId) {
@@ -1813,16 +1835,25 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                     });
                 }
 
-                confirmMountedStripePayment(checkout).then(function (intent) {
-                    status.textContent = '✅ Pago recibido. Creando tu reserva...';
-                    
+                // 🧪 Build de prueba: sin Stripe, resolvemos al instante con un
+                // payment_intent_id de relleno. musement_create_order() en el
+                // backend detecta MUSEMENT_SIMULATE_PAYMENT y ni siquiera lo mira.
+                const paymentPromise = musementSimulatePayment
+                    ? Promise.resolve({ id: 'TESTSIM-PAYMENT-INTENT' })
+                    : confirmMountedStripePayment(checkout);
+
+                paymentPromise.then(function (intent) {
+                    status.textContent = musementSimulatePayment
+                        ? '🧪 [PRUEBA] Pago simulado. Creando tu reserva...'
+                        : '✅ Pago recibido. Creando tu reserva...';
+
                     const cartUuid = MUSEMENT.cartUuid;
                     if (!cartUuid) {
                         throw new Error('No se encontró el carrito');
                     }
 
                     return createMusementOrderAfterPayment(checkout, cartUuid, intent.id);
-                    
+
                 }).then(function (orderData){
                     const order = orderData.order || orderData;
                     const vouchers = orderData.vouchers || [];
