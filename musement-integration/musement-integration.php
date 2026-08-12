@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.011');
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.013');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');

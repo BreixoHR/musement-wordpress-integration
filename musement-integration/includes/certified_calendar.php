@@ -103,7 +103,7 @@ function musement_certified_calendar_shortcode($atts)
          data-has-extra-data="<?php echo esc_attr($atts['has_extra_data']); ?>">
         <style>
 
-            .calendar-product-info{
+            .calendar-product-info, .musement-checkout__title{
                 display: none !important;
             }
 

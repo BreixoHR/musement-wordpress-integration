@@ -1227,27 +1227,211 @@
         return Number(value || 0).toFixed(2) + ' ' + (currency || 'EUR');
     }
 
-    // Botón simple de descarga en la pantalla de "gracias por tu compra". Los
-    // vouchers casi nunca están listos al instante (por eso existe todo el
-    // sondeo de startVoucherMonitoring), así que esto se llama tanto justo
-    // tras el pago (por si ya hubiera vouchers) como más tarde, en cuanto el
-    // sondeo los encuentra.
+    // ============================================================
+    // TARJETA DE CONFIRMACIÓN ("gracias por tu compra")
+    // ============================================================
+    // Colores/enlaces de marca usados en la tarjeta -- cambia aquí, no dentro
+    // de buildConfirmationCardHtml, para no tener que tocar el HTML/CSS.
+    const CONFIRMATION_CONFIG = {
+        primaryColor: '#1b4b4b',
+        darkColor: '#123838',
+        appStoreUrl: 'https://apps.apple.com/es/app/my-top-tour/id6743216454',
+        appStoreBadgeUrl: 'https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us',
+        googlePlayUrl: 'https://play.google.com/store/apps/details?id=com.orbitaonline.demotours&hl=es',
+        googlePlayBadgeUrl: 'https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png',
+        contactUrl: 'mailto:ops@example.com'
+    };
+
+    function mttEscapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function mttFormatBookingDateTime(isoString) {
+        if (!isoString) return '';
+        const d = new Date(isoString);
+        if (isNaN(d.getTime())) return '';
+        const dateLabel = d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' });
+        const timeLabel = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+        return dateLabel + ' · ' + timeLabel + 'h';
+    }
+
+    // El primer booking del pedido basta: en este checkout solo se compra un
+    // producto/fecha por pedido, así que no hace falta listar varios.
+    function mttGetPrimaryBookingSummary(octoPayload) {
+        const bookings = (octoPayload && octoPayload.order && octoPayload.order.bookings) || [];
+        const booking = bookings[0] || {};
+        const productName = (booking.product && booking.product.internalName) || '';
+        const optionName = (booking.option && booking.option.internalName) || '';
+        const unitItems = booking.unitItems || [];
+        const dateTimeIso = unitItems[0] ? unitItems[0].localDateTimeStart : '';
+
+        return {
+            productName: productName,
+            optionHtml: (optionName && optionName !== 'DEFAULT')
+                ? '<p class="mtt-product-option">' + mttEscapeHtml(optionName) + '</p>'
+                : '',
+            datetimeHtml: dateTimeIso
+                ? '<p class="mtt-product-date-time">' + mttEscapeHtml(mttFormatBookingDateTime(dateTimeIso)) + '</p>'
+                : ''
+        };
+    }
+
+    function buildConfirmationCardHtml(data) {
+        const c = CONFIRMATION_CONFIG;
+        const ticketsUrl = data.ticketsUrl || '';
+
+        return `
+<div class="mtt-confirmation-card">
+    <style>
+        .mtt-confirmation-card { max-width: 600px; margin: 0 auto; background: #ffffff !important; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); overflow: hidden; }
+        .mtt-confirmation-header { text-align: center; padding: 30px 20px 15px; }
+        .mtt-confirmation-check { width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 50%; border: 2px solid ${c.primaryColor}; color: ${c.primaryColor}; font-size: 30px; line-height: 52px; font-weight: 700; }
+        .mtt-confirmation-title { font-size: 22px !important; line-height: 1.25 !important; margin: 0 !important; color: #141414 !important; font-weight: 800 !important; }
+        .mtt-booking-number { font-size: 13px; color: #666666; margin: 6px 0 0; }
+        .mtt-divider { border: none; border-top: 1px solid #eeeeee; margin: 0 20px 20px; }
+        .mtt-product-wrap { text-align: center; padding: 0 20px; }
+        .mtt-product-box { display: inline-block; text-align: left; background: #fafafa; border: 1px solid #eeeeee; border-radius: 10px; padding: 12px 16px; max-width: 100%; }
+        .mtt-product-title { font-size: 18px !important; line-height: 1.3 !important; margin: 0 0 6px !important; color: #141414 !important; font-weight: 800 !important; }
+        .mtt-product-option { font-size: 13px; color: #777777; margin: 0 0 10px; }
+        .mtt-product-date-time { font-size: 14px; color: #333333; margin: 0; line-height: 1.7; }
+        .mtt-steps { padding: 20px; }
+        .mtt-email-box { padding: 0 24px; text-align: center; }
+        .mtt-email-box p:first-child { font-size: 14px; line-height: 1.6; margin: 0; color: #333333; }
+        .mtt-email-box strong { color: ${c.primaryColor}; }
+        .mtt-spam { font-size: 12px !important; color: #777777 !important; margin: 6px 0 0 !important; }
+        .mtt-app-wrap { padding: 0 20px 20px; }
+        .mtt-app-highlight { position: relative; overflow: hidden; background: radial-gradient(circle at top left, rgba(255,255,255,0.18), transparent 32%), linear-gradient(135deg, ${c.primaryColor} 0%, ${c.darkColor} 42%, #141414 100%); border-radius: 16px; padding: 24px 20px; text-align: center; color: #ffffff; box-shadow: 0 12px 28px rgba(0,0,0,0.18); }
+        .mtt-app-highlight::before { content: ""; position: absolute; top: -60px; right: -60px; width: 150px; height: 150px; background: rgba(255,255,255,0.08); border-radius: 50%; }
+        .mtt-app-title { font-size: 19px; line-height: 1.3; font-weight: 800; margin: 0 0 8px; color: #ffffff; }
+        .mtt-app-text { max-width: 430px; margin: 0 auto 18px; font-size: 13px; line-height: 1.55; color: rgba(255,255,255,0.9); }
+        .mtt-app-links { position: relative; z-index: 1; text-align: center; }
+        .mtt-app-link { display: inline-block; margin: 5px; vertical-align: middle; transition: transform 0.22s ease, filter 0.22s ease; }
+        .mtt-app-link:hover { transform: translateY(-2px) scale(1.02); filter: brightness(1.08); }
+        .mtt-app-link img { display: block; border: 0; }
+        .mtt-ticket-access { padding: 0 20px 20px; text-align: center; }
+        .mtt-ticket-text { font-size: 13px; line-height: 1.45; color: #555555; margin: 0 0 10px; }
+        .mtt-ticket-link { display: inline-block; color: ${c.primaryColor} !important; background: #ffffff; border: 1px solid ${c.primaryColor}; padding: 13px 26px; border-radius: 8px; font-size: 14px; font-weight: 700; text-decoration: none; transition: all 0.22s ease; }
+        .mtt-ticket-link:hover { background: ${c.darkColor} !important; color: #ffffff !important; border-color: ${c.darkColor} !important; transform: translateY(-1px); box-shadow: 0 5px 12px rgba(0,0,0,0.16); }
+        .mtt-contact { text-align: center; font-size: 12px; color: #888888; margin: 0 0 20px; padding: 0 20px; }
+        .mtt-contact a { color: ${c.primaryColor}; text-decoration: none; }
+        .mtt-ticket-link:focus-visible, .mtt-app-link:focus-visible { outline: 3px solid rgba(153,0,0,0.28); outline-offset: 3px; }
+        @media (max-width: 480px) {
+            .mtt-confirmation-card { border-radius: 12px; }
+            .mtt-product-box { display: block; }
+            .mtt-email-box { padding: 0 4px; }
+            .mtt-app-highlight { padding: 22px 14px; }
+            .mtt-app-link img[alt*="App"] { width: 124px !important; }
+            .mtt-app-link img[alt*="Google"] { width: 140px !important; }
+        }
+    </style>
+
+    <div class="mtt-confirmation-header">
+        <div class="mtt-confirmation-check" aria-hidden="true">✓</div>
+        <h2 class="mtt-confirmation-title">${mttEscapeHtml(data.title)}</h2>
+        <p class="mtt-booking-number">${mttEscapeHtml(data.bookingNumberLabel)} <strong>${mttEscapeHtml(data.bookingNumber)}</strong></p>
+    </div>
+
+    <hr class="mtt-divider">
+
+    <div class="mtt-product-wrap">
+        <div class="mtt-product-box">
+            <h3 class="mtt-product-title">${mttEscapeHtml(data.productName)}</h3>
+            ${data.productOptionHtml || ''}
+            ${data.productDatetimeHtml || ''}
+        </div>
+    </div>
+
+    <hr class="mtt-divider" style="margin-top:20px; margin-bottom:0;">
+
+    <div class="mtt-steps">
+        <div class="mtt-email-box">
+            <p>Te hemos enviado la confirmación a<br><strong>${mttEscapeHtml(data.email)}</strong></p>
+            <p class="mtt-spam">Si no la ves en unos minutos, revisa también la carpeta de spam.</p>
+        </div>
+    </div>
+
+    <div class="mtt-app-wrap">
+        <div class="mtt-app-highlight">
+            <p class="mtt-app-title">Lleva tus entradas siempre contigo</p>
+            <p class="mtt-app-text">Descarga nuestra app y accede a tus entradas (y a tu audioguía, si la compraste) el día de la visita, sin buscar el email.</p>
+            <div class="mtt-app-links">
+                <a href="${c.appStoreUrl}" target="_blank" rel="noopener" class="mtt-app-link" data-mtt-track="app_store">
+                    <img src="${c.appStoreBadgeUrl}" alt="Descargar en App Store" style="width:132px; height:auto; border-radius:7px;">
+                </a>
+                <a href="${c.googlePlayUrl}" target="_blank" rel="noopener" class="mtt-app-link" data-mtt-track="google_play">
+                    <img src="${c.googlePlayBadgeUrl}" alt="Descargar en Google Play" style="width:148px; height:auto;">
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="mtt-ticket-access">
+        <p class="mtt-ticket-text">También puedes ver y descargar tus entradas ahora mismo.</p>
+        <a href="${mttEscapeHtml(ticketsUrl || '#')}" target="_blank" rel="noopener" class="mtt-ticket-link" data-mtt-track="view_tickets"${ticketsUrl ? '' : ' aria-disabled="true"'}>
+            ${ticketsUrl ? 'Ver mis entradas' : 'Generando tus entradas…'}
+        </a>
+    </div>
+
+    <p class="mtt-contact">
+        ¿Tienes alguna duda?
+        <a href="${c.contactUrl}" target="_blank" rel="noopener">Contacta con nosotros</a>
+    </p>
+</div>`;
+    }
+
+    // Actualiza el botón de "ver mis entradas" de la tarjeta una vez que el
+    // voucher está listo. Los vouchers casi nunca están listos al instante
+    // (por eso existe todo el sondeo de startVoucherMonitoring), así que esto
+    // se llama tanto justo tras el pago (por si ya hubiera vouchers) como más
+    // tarde, en cuanto el sondeo los encuentra.
     function renderThankYouDownloadButton(checkout, url) {
         if (!checkout || !url) {
             return;
         }
 
-        const container = checkout.querySelector('.musement-thankyou-download');
-        if (!container) {
+        const link = checkout.querySelector('.mtt-ticket-link');
+        if (!link) {
             return;
         }
 
-        container.innerHTML =
-            '<a href="' + url + '" target="_blank" rel="noopener noreferrer" ' +
-            'style="display: inline-block; margin-top: 4px; padding: 12px 24px; background: #16a34a; ' +
-            'color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600;">' +
-            '📥 Descargar entradas' +
-            '</a>';
+        link.href = url;
+        link.textContent = 'Ver mis entradas';
+        link.removeAttribute('aria-disabled');
+    }
+
+    // Pinta la misma tarjeta que se muestra tras un pago real (ver el .then()
+    // de éxito en initCheckout), pero con datos de relleno y sin llamar a
+    // ningún endpoint: solo para poder maquetar/ajustar el CSS del "gracias"
+    // sin generar pedidos ni reservas reales. Ver activación en initCheckout.
+    function renderThankYouPreview(checkout) {
+        const itemsBox = checkout.querySelector('.musement-checkout__items');
+        const checkoutForm = checkout.querySelector('.musement-checkout__form');
+        const status = checkout.querySelector('.musement-checkout__status');
+
+        if (itemsBox) {
+            itemsBox.innerHTML = buildConfirmationCardHtml({
+                title: '¡Reserva confirmada!',
+                bookingNumberLabel: 'Nº de reserva',
+                bookingNumber: 'MUS00000000',
+                productName: 'Entrada al Palacio de Versalles con Audioguía',
+                productOptionHtml: '<p class="mtt-product-option">Adulto</p>',
+                productDatetimeHtml: '<p class="mtt-product-date-time">' + mttFormatBookingDateTime(new Date().toISOString()) + '</p>',
+                email: 'cliente@ejemplo.com',
+                ticketsUrl: '#'
+            });
+        }
+
+        if (checkoutForm) {
+            checkoutForm.hidden = true;
+        }
+
+        if (status) {
+            status.textContent = '';
+        }
     }
 
     function updateCartBadge(cart) {
@@ -1755,51 +1939,13 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
         .catch(err => console.error('Error:', err));
     }
     
-    function displayDocuments(vouchers, tickets, statusElement, checkout, bookingRef) {
-        let html = '<div class="musement-documents" style="margin-top: 16px; padding: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">';
-        
-        if (vouchers.length > 0) {
-            html += '<h4 style="margin: 0 0 8px 0; color: #166534;">📄 Vouchers:</h4>';
-            html += '<ul style="margin: 0; padding-left: 20px;">';
-            vouchers.forEach(v => {
-                html += `<li style="margin: 8px 0;">
-                    <a href="${v.url}" target="_blank" rel="noopener noreferrer" style="color: #16a34a; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
-                        📎 ${v.activity_name} - Descargar voucher (PDF)
-                    </a>
-                </li>`;
-            });
-            html += '</ul>';
-        }
-        
-        if (tickets.length > 0) {
-            html += '<h4 style="margin: 8px 0 8px 0; color: #166534;">🎫 Entradas individuales:</h4>';
-            html += '<ul style="margin: 0; padding-left: 20px;">';
-            tickets.forEach(t => {
-                if (t.url) {
-                    html += `<li style="margin: 8px 0;">
-                        <a href="${t.url}" target="_blank" rel="noopener noreferrer" style="color: #16a34a; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
-                            🎟️ ${t.activity_name} - Ticket ${t.ticket_id}
-                        </a>
-                    </li>`;
-                }
-            });
-            html += '</ul>';
-        }
-        
-        html += '</div>';
-        
-        let container = checkout.querySelector('.musement-checkout__documents');
-        if (!container) {
-            container = document.createElement('div');
-            container.className = 'musement-checkout__documents';
-            statusElement.insertAdjacentElement('afterend', container);
-        }
-        container.innerHTML = html;
-        statusElement.innerHTML = '✅ ¡Reserva confirmada! Tus documentos están disponibles para descargar.';
-        
-        setTimeout(function() {
-            window.location.href = MUSEMENT.checkoutUrl + '?reserva=' + bookingRef + '&status=success';
-        }, 10000);
+    // El link "Ver mis entradas" de la tarjeta de confirmación ya lo actualiza
+    // renderThankYouDownloadButton() (llamado justo después de esto en
+    // checkDocuments()); aquí solo hace falta refrescar el texto de estado.
+    // Antes esto además navegaba a otra URL a los 10s, lo que borraba la
+    // tarjeta de confirmación que se acababa de mostrar -- se ha quitado.
+    function displayDocuments(vouchers, tickets, statusElement) {
+        statusElement.textContent = 'Reserva confirmada. Tus entradas ya están disponibles.';
     }
     
     checkDocuments();
@@ -1824,6 +1970,18 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
             return;
         }
         checkout.dataset.musementInitialized = 'true';
+
+        // Previsualización de la pantalla de "gracias" sin pasar por el pago
+        // real (ni crear pedido/reserva de verdad): útil solo para ajustar el
+        // CSS. Se activa entrando a la página de checkout con
+        // "#musement-preview-thankyou" al final de la URL. Se usa el hash (y
+        // no un "?parametro") porque el hash nunca se envía al servidor, así
+        // que ni una redirección canónica de WordPress ni ningún caché de
+        // página pueden recortarlo antes de que este script lo lea.
+        if (window.location.hash === '#musement-preview-thankyou') {
+            renderThankYouPreview(checkout);
+            return;
+        }
 
         initPaymentAccordion(checkout);
 
@@ -1903,41 +2061,9 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                     
                     console.log('✅ Reserva creada:', { bookingRef, vouchers, orderUuid });
                     
-                    // Muestra los enlaces de descarga en el checkout. Ya NO envía nada a
-                    // Salesforce aquí: eso lo hace siempre startVoucherMonitoring() más abajo,
-                    // por el único camino que de verdad llega a Salesforce (fusión de vouchers +
-                    // musement_send_pdf_to_endpoint). Antes, cuando el voucher llegaba al
-                    // instante, esta función mandaba el aviso por musement_send_octo_with_vouchers,
-                    // que apuntaba a MUSEMENT_VENTRATA_ENDPOINT -- una URL de relleno
-                    // ("tu-endpoint-salesforce.com") que nunca se configuró y fallaba siempre en
-                    // silencio, así que esas reservas nunca llegaban a Salesforce.
-                    function displayVouchers(voucherList) {
-                        let vouchersHtml = '<div class="musement-vouchers" style="margin-top: 16px; padding: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">';
-                        vouchersHtml += '<h4 style="margin: 0 0 8px 0; color: #166534;">📄 Tus entradas/vouchers:</h4>';
-                        vouchersHtml += '<ul style="margin: 0; padding-left: 20px;">';
-
-                        voucherList.forEach(function(voucher) {
-                            if (voucher.url) {
-                                const activityName = voucher.activity_name || 'Actividad';
-                                vouchersHtml += `<li style="margin: 8px 0;">
-                                    <a href="${voucher.url}" target="_blank" rel="noopener noreferrer" style="color: #16a34a; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
-                                        📎 ${activityName} - Descargar voucher (PDF)
-                                    </a>
-                                </li>`;
-                            }
-                        });
-
-                        vouchersHtml += '</ul></div>';
-
-                        let vouchersContainer = checkout.querySelector('.musement-checkout__vouchers');
-                        if (!vouchersContainer) {
-                            vouchersContainer = document.createElement('div');
-                            vouchersContainer.className = 'musement-checkout__vouchers';
-                            status.insertAdjacentElement('afterend', vouchersContainer);
-                        }
-                        vouchersContainer.innerHTML = vouchersHtml;
-                    }
-
+                    // El envío a Salesforce NO pasa por aquí: eso lo hace siempre
+                    // startVoucherMonitoring() más abajo, por el único camino que de
+                    // verdad llega a Salesforce (fusión de vouchers + musement_send_pdf_to_endpoint).
                     const orderDataCompleto = {
                         id: orderUuid,
                         testMode: false,
@@ -1955,17 +2081,20 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                     // seguía mostrando los mismos items en pantalla porque nada la
                     // volvía a pintar tras el pago -- daba la impresión de que "los
                     // productos se quedan en el carrito" aunque la compra ya estaba hecha.
-                    // Antes esto simplemente vaciaba la caja, dejando la página con
-                    // aspecto de rota/vacía -- ahora se muestra un aviso de agradecimiento
-                    // en su lugar.
+                    // Ahora se muestra la tarjeta de confirmación en su lugar.
                     const itemsBox = checkout.querySelector('.musement-checkout__items');
+                    const bookingSummary = mttGetPrimaryBookingSummary(octoPayload);
                     if (itemsBox) {
-                        itemsBox.innerHTML =
-                            '<div class="musement-thankyou" style="padding: 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; text-align: center;">' +
-                                '<h3 style="margin: 0 0 8px 0; color: #166534;">🎉 ¡Gracias por tu compra!</h3>' +
-                                '<p style="margin: 0; color: #166534;">Tu reserva número <strong>' + bookingRef + '</strong> se ha confirmado correctamente.</p>' +
-                                '<div class="musement-thankyou-download"></div>' +
-                            '</div>';
+                        itemsBox.innerHTML = buildConfirmationCardHtml({
+                            title: '¡Reserva confirmada!',
+                            bookingNumberLabel: 'Nº de reserva',
+                            bookingNumber: bookingRef,
+                            productName: bookingSummary.productName,
+                            productOptionHtml: bookingSummary.optionHtml,
+                            productDatetimeHtml: bookingSummary.datetimeHtml,
+                            email: customerData.email,
+                            ticketsUrl: vouchers[0] ? vouchers[0].url : ''
+                        });
                     }
                     const checkoutForm = checkout.querySelector('.musement-checkout__form');
                     if (checkoutForm) {
@@ -1974,11 +2103,10 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                     updateCartBadge({ items: [], summary: { total: 0, currency: 'EUR' } });
 
                     if (vouchers && vouchers.length > 0) {
-                        status.textContent = `✅ ¡Reserva confirmada! Nº: ${bookingRef}. Puedes descargar tus vouchers:`;
-                        displayVouchers(vouchers);
+                        status.textContent = `Reserva confirmada. Nº: ${bookingRef}.`;
                         renderThankYouDownloadButton(checkout, vouchers[0].url);
                     } else {
-                        status.textContent = `✅ Pago confirmado. Nº reserva: ${bookingRef}. Esperando generación de vouchers...`;
+                        status.textContent = `Pago confirmado. Nº reserva: ${bookingRef}. Generando tus entradas...`;
                     }
 
                     // Independientemente de si Musement ha devuelto el voucher al instante o
