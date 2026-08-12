@@ -74,7 +74,7 @@ function musement_certified_calendar_shortcode($atts)
     }
 
     if (empty($atts['uuid'])) {
-        return '<p style="color: #d63638;">❌ Error: No se encontró el producto especificado.</p>';
+        return '<p style="color: #d63638;">Error: No se encontró el producto especificado.</p>';
     }
 
     // Encolar scripts necesarios
@@ -82,6 +82,8 @@ function musement_certified_calendar_shortcode($atts)
     wp_enqueue_script('flatpickr');
     wp_enqueue_script('flatpickr-es');
     wp_enqueue_style('musement-frontend');
+    // Roboto: misma tipografía que el widget de reservas tomado como referencia
+    wp_enqueue_style('musement-roboto-font', 'https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap', [], null);
 
     // Generar ID único para el widget
     $widget_id = 'musement-calendar-' . uniqid();
@@ -100,69 +102,107 @@ function musement_certified_calendar_shortcode($atts)
          data-requires-participants="<?php echo esc_attr($atts['requires_participants']); ?>"
          data-has-extra-data="<?php echo esc_attr($atts['has_extra_data']); ?>">
         <style>
+
+            .calendar-product-info{
+                display: none !important;
+            }
+
+            .musement-certified-calendar-wrapper {
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+            }
+
+            /* El tema (Gilroy/Helvetica) aplica su propia fuente a párrafos,
+               inputs, botones, etc. con selectores que pueden pesar más o
+               cargarse después que esta regla. El "*" + !important asegura
+               que absolutamente todo dentro del widget -- incluido el texto
+               que se inyecta luego por JS (participant-status, labels...) --
+               use Roboto sin depender de la especificidad del tema. */
+            .musement-certified-calendar-wrapper,
+            .musement-certified-calendar-wrapper * {
+                font-family: "Roboto", "Helvetica Neue", Arial, sans-serif !important;
+            }
+
             .musement-certified-calendar-wrapper .calendar-header {
-                text-align: center;
-                margin-bottom: 20px;
+                margin-bottom: 14px;
             }
 
             .musement-certified-calendar-wrapper .calendar-header h3 {
-                font-size: 22px;
-                color: #1d2327;
-                margin: 0 0 4px;
+                font-size: 15px;
+                font-weight: 400;
+                color: #1a1a1a;
+                margin: 0;
             }
 
             .musement-certified-calendar-wrapper .calendar-header p {
                 color: #666;
                 font-size: 14px;
-                margin: 0 0 8px;
+                margin: 4px 0 0;
             }
 
+            /* Fila inferior con nombre del producto y precio, estilo Demo Tours */
             .musement-certified-calendar-wrapper .calendar-product-info {
                 display: flex;
-                gap: 15px;
-                background: #f8f9fa;
-                border-radius: 8px;
-                padding: 12px 16px;
-                margin-bottom: 15px;
-                border: 1px solid #e5e7eb;
-                align-items: center;
+                gap: 12px;
+                align-items: flex-start;
+                justify-content: space-between;
+                padding: 16px 2px 4px;
+                margin-top: 4px;
+                border-top: 1px solid #e3e3e3;
             }
 
-            .musement-certified-calendar-wrapper .calendar-product-info img {
-                width: 80px;
-                height: 80px;
-                object-fit: cover;
-                border-radius: 6px;
-                flex-shrink: 0;
+            .musement-certified-calendar-wrapper .calendar-product-info img,
+            .musement-certified-calendar-wrapper .calendar-product-info .info-content p {
+                display: none;
             }
 
             .musement-certified-calendar-wrapper .calendar-product-info .info-content {
                 flex: 1;
+                min-width: 0;
             }
 
             .musement-certified-calendar-wrapper .calendar-product-info .info-content h4 {
-                font-size: 16px;
-                color: #1d2327;
-                margin: 0 0 4px;
-            }
-
-            .musement-certified-calendar-wrapper .calendar-product-info .info-content p {
-                font-size: 13px;
-                color: #666;
-                margin: 0 0 4px;
-            }
-
-            .musement-certified-calendar-wrapper .calendar-product-info .info-content .price {
+                font-size: 15px;
                 font-weight: 700;
-                color: #1d2327;
+                color: #1a1a1a;
+                margin: 0;
+                line-height: 1.35;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-product-info .info-price {
+                flex-shrink: 0;
+                text-align: right;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-product-info .price-amount {
+                display: block;
+                font-weight: 700;
+                color: #1a1a1a;
                 font-size: 16px;
+                white-space: nowrap;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-product-info .price-tax {
+                display: block;
+                color: #767676;
+                font-size: 12px;
+                margin-top: 2px;
             }
 
             .musement-certified-calendar-wrapper .calendar-container {
-                background: #fff;
-                border-radius: 8px;
-                padding: 12px;
-                border: 1px solid #e5e7eb;
+                background: transparent;
+                padding: 0;
+                border: none;
+                width: 100%;
+            }
+
+            /* El input solo existe para que flatpickr se enganche a él; el
+               calendario en sí se pinta aparte (inline:true), así que el
+               input de texto no debe verse (mostraba el valor "2026-08-20"
+               en crudo debajo de "Fecha"). */
+            .musement-certified-calendar-wrapper .calendar-container .certified-calendar-datepicker {
+                display: none !important;
             }
 
             .musement-certified-calendar-wrapper .calendar-container .flatpickr-calendar {
@@ -178,28 +218,134 @@ function musement_certified_calendar_shortcode($atts)
                 left: 0 !important;
             }
 
-            .musement-certified-calendar-wrapper .calendar-container .flatpickr-days {
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-days,
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-rContainer {
                 width: 100% !important;
             }
 
+            /* Flatpickr limita cada día a max-width:39px por defecto; con el
+               contenedor forzado a 100% ese límite fijo (no el 14.2857% pensado
+               para 7 columnas) es lo que decide cuántos días caben por fila, así
+               que si el contenedor es más ancho que 7*39px caben 8-9 días en vez
+               de 7. Con una cuadrícula CSS de 7 columnas fijas, el número de días
+               por fila ya no depende del tamaño de cada día. */
             .musement-certified-calendar-wrapper .calendar-container .dayContainer {
+                display: grid !important;
+                grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+                justify-items: center;
+                align-items: center;
                 width: 100% !important;
                 min-width: 100% !important;
                 max-width: 100% !important;
             }
 
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-day {
+                width: 32px !important;
+                height: 32px !important;
+                max-width: 32px !important;
+                line-height: 32px !important;
+            }
+
+            /* Cabecera mes/año: flatpickr la renderiza como <select>/<input>,
+               los desnudamos de apariencia de formulario para que se vean como
+               texto centrado en negrita, igual que en la web de referencia. */
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-months {
+                margin-bottom: 6px;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-current-month {
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                font-size: 19px;
+                font-weight: 700;
+                color: #1a1a1a;
+                padding: 0;
+            }
+
+            /* El tema/plugins de WordPress suelen forzar width:100% en todo
+               input/select de formulario; sin anularlo aquí, el <select> del
+               mes y el <input> del año se estiran y "Agosto" y "2026" quedan
+               separados por un hueco enorme en vez de ir juntos. */
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-current-month .numInputWrapper {
+                width: 4.5ch !important;
+                flex: 0 0 auto;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-current-month .flatpickr-monthDropdown-months,
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-current-month input.cur-year {
+                width: auto !important;
+                max-width: none;
+                flex: 0 0 auto;
+                font-size: 19px;
+                font-weight: 700;
+                color: #1a1a1a;
+                background: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
+                text-align: center;
+                -webkit-appearance: none;
+                appearance: none;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-prev-month,
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-next-month {
+                padding: 0;
+                background: transparent !important;
+                fill: #1a1a1a;
+                color: #1a1a1a;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-prev-month:hover svg,
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-next-month:hover svg {
+                fill: #1a1a1a;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-weekdays {
+                margin-bottom: 4px;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container span.flatpickr-weekday {
+                font-weight: 700;
+                font-size: 13px;
+                color: #1a1a1a;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-day {
+                border-radius: 8px !important;
+                font-weight: 500;
+                color: #1a1a1a;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.flatpickr-disabled,
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.prevMonthDay,
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.nextMonthDay {
+                color: rgba(26, 26, 26, 0.3) !important;
+                background: transparent !important;
+            }
+
             .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.available {
-                background: #edfaef !important;
-                border-radius: 4px !important;
+                background: #78D28C !important;
+                color: #1a1a1a !important;
+                font-weight: 700;
+                border-radius: 8px !important;
             }
 
             .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.available:hover {
-                background: #d4edda !important;
+                background: #1D5963 !important;
+                color: #fff !important;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.today {
+                border-color: #1a1a1a;
             }
 
             .musement-certified-calendar-wrapper .calendar-container .flatpickr-day.selected {
-                background: #2271b1 !important;
-                border-color: #2271b1 !important;
+                background: #1b4b4b !important;
+                border-color: #1b4b4b !important;
+                color: #fff !important;
             }
 
             /* Slots */
@@ -213,15 +359,26 @@ function musement_certified_calendar_shortcode($atts)
             }
 
             .musement-certified-calendar-wrapper .slots-container.visible {
-                display: block;
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                gap: 8px;
+            }
+
+            /* La cabecera "Horarios disponibles:" y el filtro de idioma son
+               hijos directos del mismo contenedor que las tarjetas de horario;
+               al convertirlo en grid, deben ocupar todas las columnas en vez
+               de comportarse como una tarjeta más. */
+            .musement-certified-calendar-wrapper .slots-container > div:not(.slot-item),
+            .musement-certified-calendar-wrapper .slots-container > p {
+                grid-column: 1 / -1;
             }
 
             .musement-certified-calendar-wrapper .slots-container .slot-item {
                 display: flex;
-                justify-content: space-between;
+                flex-wrap: wrap;
                 align-items: center;
-                padding: 8px 12px;
-                margin: 4px 0;
+                padding: 10px 12px;
+                margin: 0;
                 background: #fff;
                 border: 1px solid #e5e7eb;
                 border-radius: 6px;
@@ -245,15 +402,24 @@ function musement_certified_calendar_shortcode($atts)
             }
 
             .musement-certified-calendar-wrapper .slots-container .slot-item .slot-time {
+                order: 1;
                 font-weight: 500;
             }
 
+            /* El precio va debajo del todo: al ser el único con flex-basis:100%
+               fuerza el salto de línea justo después de él (hora + estado
+               quedan juntos arriba, precio abajo), sin tocar el orden real
+               del HTML que genera el JS. */
             .musement-certified-calendar-wrapper .slots-container .slot-item .slot-price {
+                order: 3;
+                flex-basis: 100%;
                 color: #666;
                 font-size: 13px;
             }
 
             .musement-certified-calendar-wrapper .slots-container .slot-item .slot-status {
+                order: 2;
+                margin-left: auto;
                 font-size: 12px;
                 padding: 2px 10px;
                 border-radius: 12px;
@@ -316,13 +482,18 @@ function musement_certified_calendar_shortcode($atts)
             }
 
             .musement-certified-calendar-wrapper .participant-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 width: 36px;
                 height: 36px;
+                padding: 0;
                 border-radius: 50%;
                 border: 1px solid #ddd;
                 background: #fff;
                 cursor: pointer;
                 font-size: 20px;
+                line-height: 1;
                 font-weight: bold;
                 transition: all 0.2s;
             }
@@ -488,35 +659,64 @@ function musement_certified_calendar_shortcode($atts)
             .musement-certified-calendar-wrapper .calendar-actions {
                 margin-top: 12px;
                 display: flex;
+                flex-direction: column;
                 gap: 10px;
             }
 
             .musement-certified-calendar-wrapper .calendar-actions .btn-primary {
-                flex: 1;
-                padding: 10px;
-                background: #2271b1;
+                width: 100%;
+                padding: 14px;
+                background: #1b4b4b;
                 color: #fff;
                 border: none;
-                border-radius: 6px;
-                font-size: 15px;
-                font-weight: 600;
+                border-radius: 0px;
+                font-size: 16px;
+                font-weight: 700;
                 cursor: pointer;
-                transition: background 0.3s, transform 0.2s;
+                transition: background 0.3s;
+                box-sizing: border-box;
             }
 
             .musement-certified-calendar-wrapper .calendar-actions .btn-primary:hover:not(:disabled) {
-                background: #135e96;
-                transform: translateY(-1px);
+                background: #123838;
             }
 
             .musement-certified-calendar-wrapper .calendar-actions .btn-primary:disabled {
                 background: #ccc;
                 cursor: not-allowed;
-                transform: none;
             }
 
             .musement-certified-calendar-wrapper .calendar-actions .btn-primary.added {
                 background: #00a32a;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-actions .btn-secondary {
+                width: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                padding: 3px;
+                background: #fff;
+                color: #1b4b4b;
+                border: 1px solid #1b4b4b;
+                border-radius: 0px;
+                font-size: 16px;
+                font-weight: 700;
+                cursor: pointer;
+                text-decoration: none;
+                transition: background 0.2s;
+                box-sizing: border-box;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-actions .btn-secondary:hover {
+                background: #f2f7f6;
+            }
+
+            .musement-certified-calendar-wrapper .calendar-actions .btn-secondary svg {
+                width: 18px;
+                height: 18px;
+                flex-shrink: 0;
             }
 
             .musement-certified-calendar-wrapper .calendar-message {
@@ -547,43 +747,16 @@ function musement_certified_calendar_shortcode($atts)
                 padding: 20px;
             }
 
-            @media (max-width: 768px) {
-                .musement-certified-calendar-wrapper .calendar-product-info {
-                    flex-direction: column;
-                    text-align: center;
-                }
-
-                .musement-certified-calendar-wrapper .calendar-product-info img {
-                    width: 120px;
-                    height: 120px;
-                }
-
-                .musement-certified-calendar-wrapper .calendar-actions {
-                    flex-direction: column;
-                }
-            }
         </style>
 
         <!-- Product Info -->
         <div class="calendar-header">
-            <h3>📅 Disponibilidad</h3>
-            <p>Selecciona una fecha para ver los horarios disponibles</p>
-        </div>
-
-        <div class="calendar-product-info" id="product-info-<?php echo esc_attr($widget_id); ?>">
-            <?php if ($atts['image']): ?>
-            <img src="<?php echo esc_url($atts['image']); ?>" alt="<?php echo esc_attr($atts['title']); ?>">
-            <?php endif; ?>
-            <div class="info-content">
-                <h4><?php echo esc_html($atts['title']); ?></h4>
-                <p><?php echo esc_html($atts['description']); ?></p>
-                <span class="price">Desde <?php echo number_format($atts['price'], 2); ?> <?php echo esc_html($atts['currency']); ?></span>
-            </div>
+            <h3>Elige una fecha y reserva.</h3>
         </div>
 
         <!-- Calendar -->
         <div class="calendar-container">
-            <input type="text" class="certified-calendar-datepicker" 
+            <input type="text" class="certified-calendar-datepicker"
                 id="datepicker-<?php echo esc_attr($widget_id); ?>"
                 placeholder="Selecciona una fecha"
                 style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; box-sizing: border-box;">
@@ -598,27 +771,51 @@ function musement_certified_calendar_shortcode($atts)
 
         <!-- Participantes y preguntas -->
         <div class="musement-certified-questions" id="questions-<?php echo esc_attr($widget_id); ?>" style="display:none;">
-            <div style="font-weight: 600; margin-bottom: 8px; font-size: 15px;">📋 Información de participantes</div>
+            <div style="font-weight: 600; margin-bottom: 8px; font-size: 15px;">Información de participantes</div>
             <div id="questions-content-<?php echo esc_attr($widget_id); ?>"></div>
         </div>
 
         <!-- Datos extra del cliente -->
         <div class="musement-certified-extra-data" id="extra-data-<?php echo esc_attr($widget_id); ?>" style="display:none;">
-            <div style="font-weight: 600; margin-bottom: 8px; font-size: 15px;">📌 Información adicional de reserva</div>
+            <div style="font-weight: 600; margin-bottom: 8px; font-size: 15px;">Información adicional de reserva</div>
             <div id="extra-data-content-<?php echo esc_attr($widget_id); ?>"></div>
         </div>
 
         <!-- Summary -->
         <div class="selection-summary" id="summary-<?php echo esc_attr($widget_id); ?>">
-            <div style="font-weight: 600; margin-bottom: 6px;">📋 Resumen de selección</div>
+            <div style="font-weight: 600; margin-bottom: 6px;">Resumen de selección</div>
             <div id="summary-content-<?php echo esc_attr($widget_id); ?>"></div>
+        </div>
+
+        <!-- Nombre del producto y precio, justo encima de los botones -->
+        <div class="calendar-product-info" id="product-info-<?php echo esc_attr($widget_id); ?>">
+            <?php if ($atts['image']): ?>
+            <img src="<?php echo esc_url($atts['image']); ?>" alt="<?php echo esc_attr($atts['title']); ?>">
+            <?php endif; ?>
+            <div class="info-content">
+                <h4><?php echo esc_html($atts['title']); ?></h4>
+                <p><?php echo esc_html($atts['description']); ?></p>
+            </div>
+            <div class="info-price">
+                <?php $currency_symbol = strtoupper($atts['currency']) === 'EUR' ? '€' : (' ' . esc_html($atts['currency'])); ?>
+                <span class="price-amount"><?php echo number_format($atts['price'], 2, ',', '.'); ?> <?php echo $currency_symbol; ?></span>
+                <span class="price-tax">imp. incl.</span>
+            </div>
         </div>
 
         <!-- Actions -->
         <div class="calendar-actions">
             <button class="btn-primary" id="add-cart-<?php echo esc_attr($widget_id); ?>" disabled>
-                🛒 Añadir al carrito
+                Añadir al carrito
             </button>
+            <a class="btn-secondary" href="<?php echo esc_url(musement_checkout_url()); ?>">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M3 3h2l2.4 12.4a2 2 0 0 0 2 1.6h8.2a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="9" cy="20" r="1.4" fill="currentColor"/>
+                    <circle cx="17" cy="20" r="1.4" fill="currentColor"/>
+                </svg>
+                Ir al carrito
+            </a>
         </div>
 
         <div class="calendar-message" id="message-<?php echo esc_attr($widget_id); ?>"></div>
@@ -626,7 +823,7 @@ function musement_certified_calendar_shortcode($atts)
         <!-- Barra de carrito flotante -->
         <div class="musement-cart-bar" id="demo-cart-bar" >
             <span>
-                🛒 <strong class="musement-cart-bar__count" id="cart-count-<?php echo esc_attr($widget_id); ?>">0</strong> producto(s)
+                <strong class="musement-cart-bar__count" id="cart-count-<?php echo esc_attr($widget_id); ?>">0</strong> producto(s)
             </span>
             <span class="musement-cart-bar__total" id="cart-total-<?php echo esc_attr($widget_id); ?>">0.00 EUR</span>
             <a class="musement-cart-bar__checkout" href="<?php echo esc_url(musement_checkout_url()); ?>" style="color:white">
@@ -729,8 +926,8 @@ function musement_certified_calendar_shortcode($atts)
                 },
                 onDayCreate: function(dObj, dStr, fp, dayElem) {
                     var date = dayElem.dateObj;
-                    var dateStr = date.getFullYear() + '-' + 
-                        String(date.getMonth() + 1).padStart(2, '0') + '-' + 
+                    var dateStr = date.getFullYear() + '-' +
+                        String(date.getMonth() + 1).padStart(2, '0') + '-' +
                         String(date.getDate()).padStart(2, '0');
 
                     if (state.availability && state.availability[dateStr]) {
@@ -961,7 +1158,7 @@ function musement_certified_calendar_shortcode($atts)
             // Filtro de idioma (solo si hay más de uno disponible)
             if (languageCodes.length > 1) {
                 html += '<div class="language-filter" id="language-filter-' + widgetId + '">';
-                html += '<span class="language-filter-label">🌐 Idioma:</span>';
+                html += '<span class="language-filter-label">Idioma:</span>';
                 html += '<button type="button" class="language-filter-btn' + (!state.selectedLanguage ? ' active' : '') + '" data-lang="" data-product="' + widgetId + '">Todos</button>';
                 languageCodes.forEach(function(code) {
                     var active = state.selectedLanguage === code ? ' active' : '';
@@ -970,7 +1167,7 @@ function musement_certified_calendar_shortcode($atts)
                 html += '</div>';
             }
 
-            html += '<div style="margin-top: 10px;"><strong>🕐 Horarios disponibles:</strong></div>';
+            html += '<div style="margin-top: 10px;"><strong>Horarios disponibles:</strong></div>';
             var hasAnySlotRendered = false;
 
             groups.forEach(function(group) {
@@ -1015,13 +1212,13 @@ function musement_certified_calendar_shortcode($atts)
                         '" data-language-name="' + (language.name || '') +
                         '" data-min-buy="' + (slot.min_buy || 1) +
                         '" data-products-b64="' + productsB64 + '">';
-                    html += '<span class="slot-time">🕐 ' + (slot.time || 'Horario flexible') + '</span>';
+                    html += '<span class="slot-time">' + (slot.time || 'Horario flexible') + '</span>';
                     html += '<span class="slot-price">' + priceLabel + '</span>';
                     if (language.code || language.name) {
                         html += '<span class="slot-status available">' + (language.name || language.code) + '</span>';
                     }
                     html += '<span class="slot-status ' + (isAvailable ? 'available' : 'unavailable') + '">' +
-                        (isAvailable ? '✅ Disponible' : '❌ Agotado') + '</span>';
+                        (isAvailable ? 'Disponible' : 'Agotado') + '</span>';
                     html += '</div>';
                 });
             });
@@ -1211,7 +1408,7 @@ function musement_certified_calendar_shortcode($atts)
 
             // Selector de participantes
             html += '<div class="participant-selector">';
-            html += '<label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 15px;">👥 Número de participantes</label>';
+            html += '<label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 15px;">Número de participantes</label>';
             html += '<div style="display: flex; align-items: center; gap: 12px;">';
             html += '<button class="participant-btn" data-action="minus" data-product="' + widgetId + '">−</button>';
             html += '<span id="participant-count-' + widgetId + '" style="font-size: 20px; font-weight: 600; min-width: 40px; text-align: center;">' + currentCount + '</span>';
@@ -1230,11 +1427,11 @@ function musement_certified_calendar_shortcode($atts)
             
             // Botón confirmar
             html += '<button class="certified-confirm-btn" id="confirm-all-' + widgetId + '" disabled>';
-            html += '✅ Confirmar todos los participantes';
+            html += 'Confirmar todos los participantes';
             html += '</button>';
             
             // Progress
-            html += '<div class="certified-progress" id="progress-' + widgetId + '">📊 Progreso: 0/0 campos completados</div>';
+            html += '<div class="certified-progress" id="progress-' + widgetId + '">Progreso: 0/0 campos completados</div>';
 
             content.innerHTML = html;
 
@@ -1256,7 +1453,7 @@ function musement_certified_calendar_shortcode($atts)
                     var confirmBtn = document.getElementById('confirm-all-' + widgetId);
                     if (confirmBtn) {
                         confirmBtn.disabled = true;
-                        confirmBtn.textContent = '✅ Confirmar todos los participantes';
+                        confirmBtn.textContent = 'Confirmar todos los participantes';
                         confirmBtn.style.background = '#7b2fbe';
                     }
                     updateProgress(widgetId);
@@ -1269,14 +1466,14 @@ function musement_certified_calendar_shortcode($atts)
                 var allValid = validateAllParticipants(widgetId);
                 if (allValid) {
                     state.allConfirmed = true;
-                    this.textContent = '✅ Todos confirmados';
+                    this.textContent = 'Todos confirmados';
                     this.disabled = true;
                     this.style.background = '#00a32a';
                     updateSummary(widgetId);
-                    showMessage(widgetId, 'success', '✅ Todos los participantes han sido confirmados');
+                    showMessage(widgetId, 'success', 'Todos los participantes han sido confirmados');
                     document.getElementById('add-cart-' + widgetId).disabled = false;
                 } else {
-                    showMessage(widgetId, 'error', '❌ Completa todos los campos obligatorios para cada participante');
+                    showMessage(widgetId, 'error', 'Completa todos los campos obligatorios para cada participante');
                 }
             });
 
@@ -1306,7 +1503,7 @@ function musement_certified_calendar_shortcode($atts)
         function renderExtraCustomerData(widgetId) {
             var html = '';
             html += '<div class="extra-data-block">';
-            html += '<div style="font-weight: 600; margin-bottom: 8px; font-size: 15px;">📝 Información extra del cliente</div>';
+            html += '<div style="font-weight: 600; margin-bottom: 8px; font-size: 15px;">Información extra del cliente</div>';
             html += '<div class="question-item">';
             html += '<label for="extra_phone_' + widgetId + '">Teléfono de contacto</label>';
             html += '<input type="tel" id="extra_phone_' + widgetId + '" class="certified-extra-input" data-product="' + widgetId + '" data-key="phone" placeholder="+34 600 000 000">';
@@ -1344,15 +1541,15 @@ function musement_certified_calendar_shortcode($atts)
             for (var p = 1; p <= count; p++) {
                 html += '<div class="participant-form" id="participant-form-' + widgetId + '-' + p + '">';
                 html += '<div class="participant-header">';
-                html += '<span>👤 Participante ' + p + '</span>';
-                html += '<span class="participant-status" id="participant-status-' + widgetId + '-' + p + '">⏳ Pendiente</span>';
+                html += '<span>Participante ' + p + '</span>';
+                html += '<span class="participant-status" id="participant-status-' + widgetId + '-' + p + '">Pendiente</span>';
                 html += '</div>';
 
                 // Tipo de entrada (adulto/niño/etc.), si el producto tiene varios tipos disponibles
                 if (products.length > 0) {
                     var ticketInputId = 'ticket_' + widgetId + '_p' + p;
                     html += '<div class="question-item">';
-                    html += '<label for="' + ticketInputId + '">🎫 Tipo de entrada';
+                    html += '<label for="' + ticketInputId + '">Tipo de entrada';
                     if (showTicketTypeSelect) {
                         html += ' <span class="required">*</span>';
                     }
@@ -1476,10 +1673,10 @@ function musement_certified_calendar_shortcode($atts)
                 var formEl = document.getElementById('participant-form-' + widgetId + '-' + p);
                 if (statusEl) {
                     if (allRequiredFilled) {
-                        statusEl.textContent = '✅ Completado';
+                        statusEl.textContent = 'Completado';
                         statusEl.className = 'participant-status completed';
                     } else {
-                        statusEl.textContent = '⏳ Pendiente';
+                        statusEl.textContent = 'Pendiente';
                         statusEl.className = 'participant-status';
                         statusEl.style.color = '#999';
                     }
@@ -1492,9 +1689,9 @@ function musement_certified_calendar_shortcode($atts)
             var progress = totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0;
             var progressEl = document.getElementById('progress-' + widgetId);
             if (progressEl) {
-                var msg = '📊 Progreso: ' + filledFields + '/' + totalFields + ' campos completados (' + progress + '%)';
+                var msg = 'Progreso: ' + filledFields + '/' + totalFields + ' campos completados (' + progress + '%)';
                 if (requiredFields > 0 && filledRequired < requiredFields) {
-                    msg += ' - ⚠️ Faltan ' + (requiredFields - filledRequired) + ' obligatorios';
+                    msg += ' - Faltan ' + (requiredFields - filledRequired) + ' obligatorios';
                     progressEl.className = 'certified-progress';
                 } else if (filledFields === totalFields) {
                     progressEl.className = 'certified-progress completed';
@@ -1511,13 +1708,13 @@ function musement_certified_calendar_shortcode($atts)
                 confirmBtn.disabled = !allRequiredFilledGlobal;
                 if (allRequiredFilledGlobal && filledFields === totalFields) {
                     confirmBtn.style.background = '#00a32a';
-                    confirmBtn.textContent = '✅ Confirmar todos los participantes';
+                    confirmBtn.textContent = 'Confirmar todos los participantes';
                 } else if (allRequiredFilledGlobal) {
                     confirmBtn.style.background = '#f0b400';
-                    confirmBtn.textContent = '⚠️ Faltan campos opcionales (puedes confirmar)';
+                    confirmBtn.textContent = 'Faltan campos opcionales (puedes confirmar)';
                 } else {
                     confirmBtn.style.background = '#7b2fbe';
-                    confirmBtn.textContent = '✅ Confirmar todos los participantes';
+                    confirmBtn.textContent = 'Confirmar todos los participantes';
                 }
             }
         }
@@ -1643,18 +1840,18 @@ function musement_certified_calendar_shortcode($atts)
             var participantCount = state.participantCount || 1;
 
             var html = '';
-            html += '<div class="summary-row"><span>📅 Fecha</span><span>' + state.selectedDate + '</span></div>';
-            html += '<div class="summary-row"><span>🕐 Horario</span><span>' + state.selectedSlot.time + '</span></div>';
+            html += '<div class="summary-row"><span>Fecha</span><span>' + state.selectedDate + '</span></div>';
+            html += '<div class="summary-row"><span>Horario</span><span>' + state.selectedSlot.time + '</span></div>';
             if (state.selectedSlot.language || state.selectedSlot.languageName) {
-                html += '<div class="summary-row"><span>🌐 Idioma</span><span>' + (state.selectedSlot.languageName || state.selectedSlot.language) + '</span></div>';
+                html += '<div class="summary-row"><span>Idioma</span><span>' + (state.selectedSlot.languageName || state.selectedSlot.language) + '</span></div>';
             }
-            html += '<div class="summary-row"><span>👥 Participantes</span><span>' + participantCount + '</span></div>';
+            html += '<div class="summary-row"><span>Participantes</span><span>' + participantCount + '</span></div>';
 
             pricing.items.forEach(function(item) {
-                html += '<div class="summary-row"><span>🎫 ' + item.productName + ' x' + item.quantity + '</span><span>' + (item.unitPrice * item.quantity).toFixed(2) + ' ' + item.currency + '</span></div>';
+                html += '<div class="summary-row"><span>' + item.productName + ' x' + item.quantity + '</span><span>' + (item.unitPrice * item.quantity).toFixed(2) + ' ' + item.currency + '</span></div>';
             });
 
-            html += '<div class="summary-row summary-total"><span>💰 Total</span><span>' + pricing.total.toFixed(2) + ' ' + pricing.currency + '</span></div>';
+            html += '<div class="summary-row summary-total"><span>Total</span><span>' + pricing.total.toFixed(2) + ' ' + pricing.currency + '</span></div>';
 
             content.innerHTML = html;
             summary.classList.add('visible');
@@ -1675,25 +1872,25 @@ function musement_certified_calendar_shortcode($atts)
             }
 
             if (!state.selectedDate || !state.selectedSlot) {
-                showMessage(widgetId, 'error', '❌ Selecciona fecha y horario');
+                showMessage(widgetId, 'error', 'Selecciona fecha y horario');
                 return;
             }
 
             var minBuyCheck = state.slotMinBuy || 1;
             if ((state.participantCount || 1) < minBuyCheck) {
-                showMessage(widgetId, 'error', '❌ Este horario exige un mínimo de ' + minBuyCheck + ' participantes');
+                showMessage(widgetId, 'error', 'Este horario exige un mínimo de ' + minBuyCheck + ' participantes');
                 return;
             }
 
             if (!state.allConfirmed) {
-                showMessage(widgetId, 'error', '❌ Confirma todos los participantes');
+                showMessage(widgetId, 'error', 'Confirma todos los participantes');
                 return;
             }
 
             var pricing = getParticipantsPricing(widgetId);
 
             if (pricing.items.length === 0) {
-                showMessage(widgetId, 'error', '❌ Selecciona el tipo de entrada para cada participante');
+                showMessage(widgetId, 'error', 'Selecciona el tipo de entrada para cada participante');
                 return;
             }
 
@@ -1740,7 +1937,7 @@ function musement_certified_calendar_shortcode($atts)
 
             addBtn.disabled = true;
 
-            console.log('📤 Musement cart add payload', payload);
+            console.log('Musement cart add payload', payload);
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
                 method: 'POST',
                 credentials: 'same-origin',
@@ -1750,37 +1947,37 @@ function musement_certified_calendar_shortcode($atts)
             .then(function(text) {
                 try {
                     var response = JSON.parse(text);
-                    console.log('📦 Respuesta carrito:', response);
+                    console.log('Respuesta carrito:', response);
 
                     if (response && response.success) {
-                        showMessage(widgetId, 'success', '✅ ' + participantCount + ' participantes añadidos al carrito');
+                        showMessage(widgetId, 'success', '' + participantCount + ' participantes añadidos al carrito');
                         updateCartBadge(widgetId, response.data);
 
-                        addBtn.textContent = '✅ Añadido (' + participantCount + ' participantes)';
+                        addBtn.textContent = 'Añadido (' + participantCount + ' participantes)';
                         addBtn.classList.add('added');
                         setTimeout(function() {
-                            addBtn.textContent = '🛒 Añadir al carrito';
+                            addBtn.textContent = 'Añadir al carrito';
                             addBtn.classList.remove('added');
                             addBtn.disabled = false;
                         }, 3000);
                     } else {
                         var errorMsg = response && response.data ? response.data.message : 'Error desconocido';
-                        showMessage(widgetId, 'error', '❌ Error: ' + errorMsg);
-                        console.error('❌ Error detallado:', response);
+                        showMessage(widgetId, 'error', 'Error: ' + errorMsg);
+                        console.error('Error detallado:', response);
                         if (response && response.data && response.data.remote_error_data) {
-                            console.error('❌ Musement remote_error_data:', JSON.stringify(response.data.remote_error_data, null, 2));
+                            console.error('Musement remote_error_data:', JSON.stringify(response.data.remote_error_data, null, 2));
                         }
                         addBtn.disabled = false;
                     }
                 } catch(e) {
-                    console.error('❌ Error parsing JSON:', e);
-                    showMessage(widgetId, 'error', '❌ Error de respuesta: ' + text.substring(0, 200));
+                    console.error('Error parsing JSON:', e);
+                    showMessage(widgetId, 'error', 'Error de respuesta: ' + text.substring(0, 200));
                     addBtn.disabled = false;
                 }
             })
             .catch(function(error) {
-                console.error('❌ Error:', error);
-                showMessage(widgetId, 'error', '❌ Error de conexión: ' + error.message);
+                console.error('Error:', error);
+                showMessage(widgetId, 'error', 'Error de conexión: ' + error.message);
                 addBtn.disabled = false;
             });
         });

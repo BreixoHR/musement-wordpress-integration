@@ -281,9 +281,16 @@ class Musement_Certification_Unified {
                 }
                 
                 .musement-demo-cards .demo-calendar-wrapper .dayContainer {
+                    display: grid !important;
+                    grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
                     width: 100% !important;
                     min-width: 100% !important;
                     max-width: 100% !important;
+                }
+
+                .musement-demo-cards .demo-calendar-wrapper .flatpickr-day {
+                    max-width: none !important;
+                    width: 100% !important;
                 }
                 
                 .musement-demo-cards .demo-slots {

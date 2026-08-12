@@ -2,7 +2,7 @@
 
 Plugin WordPress para mostrar actividades de Musement, permitir seleccion de productos/horarios, preparar checkout propio y sincronizar pedidos pagados con Salesforce y Musement/Sales.
 
-Version actual: `0.13.3`
+Version actual: `0.13.5`
 
 ## Estado Del Plugin
 

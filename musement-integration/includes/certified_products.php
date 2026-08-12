@@ -179,9 +179,16 @@ function musement_certified_products_shortcode()
         }
 
         .musement-certified-dynamic .dayContainer {
+            display: grid !important;
+            grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
             width: 100% !important;
             min-width: 100% !important;
             max-width: 100% !important;
+        }
+
+        .musement-certified-dynamic .flatpickr-day {
+            max-width: none !important;
+            width: 100% !important;
         }
 
         .musement-certified-slot {
