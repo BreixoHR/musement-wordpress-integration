@@ -1227,6 +1227,29 @@
         return Number(value || 0).toFixed(2) + ' ' + (currency || 'EUR');
     }
 
+    // Botón simple de descarga en la pantalla de "gracias por tu compra". Los
+    // vouchers casi nunca están listos al instante (por eso existe todo el
+    // sondeo de startVoucherMonitoring), así que esto se llama tanto justo
+    // tras el pago (por si ya hubiera vouchers) como más tarde, en cuanto el
+    // sondeo los encuentra.
+    function renderThankYouDownloadButton(checkout, url) {
+        if (!checkout || !url) {
+            return;
+        }
+
+        const container = checkout.querySelector('.musement-thankyou-download');
+        if (!container) {
+            return;
+        }
+
+        container.innerHTML =
+            '<a href="' + url + '" target="_blank" rel="noopener noreferrer" ' +
+            'style="display: inline-block; margin-top: 4px; padding: 12px 24px; background: #16a34a; ' +
+            'color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600;">' +
+            '📥 Descargar entradas' +
+            '</a>';
+    }
+
     function updateCartBadge(cart) {
         const badge = document.querySelector('.musement-cart-bar__count');
         const total = document.querySelector('.musement-cart-bar__total');
@@ -1610,13 +1633,7 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
      */
     function sendPdfAsFormData(payload) {
         console.log('📤 Enviando peticion a salesforce desde el backend...');
-
-        // 🧪 Build de prueba: si se definió MUSEMENT_SALES_TEST_ENDPOINT en PHP,
-        // el envío va ahí en vez de al endpoint de producción.
-        var salesEndpoint = (typeof MUSEMENT !== 'undefined' && MUSEMENT.salesEndpointOverride)
-            ? MUSEMENT.salesEndpointOverride
-            : 'https://example.my.salesforce-sites.com/services/apexrest/Booking/Musement';
-
+    
         // 🔥 En lugar de enviar el PDF directamente, pedimos al backend que lo envíe
         fetch(MUSEMENT.ajax, {
             method: 'POST',
@@ -1625,7 +1642,7 @@ function startVoucherMonitoring(orderUuid, checkout, statusElement, bookingRef, 
                 action: 'musement_send_pdf_to_endpoint',
                 nonce: MUSEMENT.nonce,
                 order_uuid: orderUuid,
-                endpoint_url: salesEndpoint,
+                endpoint_url: 'https://example.my.salesforce-sites.com/services/apexrest/Booking/Musement',
                 payload: JSON.stringify(payload)
             })
         })
@@ -1712,8 +1729,9 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                     const tickets = ticketResult.success ? ticketResult.data.tickets : [];
                     
                     showPayloadWithUrls(vouchers, tickets, originalOrderData);
-                    
+
                     displayDocuments(vouchers, tickets, statusElement, checkout, bookingRef);
+                    renderThankYouDownloadButton(checkout, vouchers[0] && vouchers[0].url);
                     
                     if (monitoringInterval) {
                         clearInterval(monitoringInterval);
@@ -1790,6 +1808,23 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
 
 
     function initCheckout(checkout) {
+        // Si el contenido de la página se procesa más de una vez en la misma
+        // carga (habitual con plugins de SEO/algunos temas que pasan el
+        // contenido por "the_content" más de una vez), este bloque puede
+        // aparecer duplicado en el HTML y querySelectorAll('[data-musement-checkout]')
+        // encuentra ambos, inicializando el checkout dos veces -- dos listeners
+        // de "submit" sobre el (o los) formulario(s), y un único clic en Pagar
+        // dispara los dos: dos ejecuciones completas del cobro y la creación
+        // del pedido para el mismo carrito, una detrás de otra (por el bloqueo
+        // de sesión de PHP, no en paralelo). Esto es lo que provocaba que un
+        // producto se añadiera varias veces al carrito remoto de Musement en
+        // una sola compra. Marcamos el elemento para que solo se inicialice
+        // una vez.
+        if (checkout.dataset.musementInitialized === 'true') {
+            return;
+        }
+        checkout.dataset.musementInitialized = 'true';
+
         initPaymentAccordion(checkout);
 
         post('musement_cart_get').then(function (json) {
@@ -1806,10 +1841,8 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
             const submit = form.querySelector('button[type="submit"]');
             const payload = {};
 
-            const musementSimulatePayment = (typeof MUSEMENT !== 'undefined' && MUSEMENT.simulatePayment);
-
-            if (checkout._stripePayment || musementSimulatePayment) {
-                status.textContent = musementSimulatePayment ? '🧪 [PRUEBA] Simulando pago...' : 'Confirmando pago...';
+            if (checkout._stripePayment) {
+                status.textContent = 'Confirmando pago...';
                 submit.disabled = true;
 
                 function createMusementOrderAfterPayment(checkout, cartUuid, paymentIntentId) {
@@ -1835,29 +1868,25 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                     });
                 }
 
-                // 🧪 Build de prueba: sin Stripe, resolvemos al instante con un
-                // payment_intent_id de relleno. musement_create_order() en el
-                // backend detecta MUSEMENT_SIMULATE_PAYMENT y ni siquiera lo mira.
-                const paymentPromise = musementSimulatePayment
-                    ? Promise.resolve({ id: 'TESTSIM-PAYMENT-INTENT' })
-                    : confirmMountedStripePayment(checkout);
-
-                paymentPromise.then(function (intent) {
-                    status.textContent = musementSimulatePayment
-                        ? '🧪 [PRUEBA] Pago simulado. Creando tu reserva...'
-                        : '✅ Pago recibido. Creando tu reserva...';
-
+                confirmMountedStripePayment(checkout).then(function (intent) {
+                    status.textContent = '✅ Pago recibido. Creando tu reserva...';
+                    
                     const cartUuid = MUSEMENT.cartUuid;
                     if (!cartUuid) {
                         throw new Error('No se encontró el carrito');
                     }
 
                     return createMusementOrderAfterPayment(checkout, cartUuid, intent.id);
-
+                    
                 }).then(function (orderData){
                     const order = orderData.order || orderData;
                     const vouchers = orderData.vouchers || [];
-                    const bookingRef = order.uuid || order.identifier || orderData.order_uuid || '';
+                    // "identifier" es la referencia legible de Musement (p.ej. "MUS16469558"),
+                    // el localizador de verdad -- antes se priorizaba "uuid" (un id interno
+                    // largo tipo e6e7dfe3-6310-...) y encima se recortaba a 8 caracteres para
+                    // que "cupiera", dejando un localizador que no servía ni para identificar
+                    // la reserva ni para nada.
+                    const bookingRef = order.identifier || order.uuid || orderData.order_uuid || '';
                     const orderUuid = orderData.order_uuid || order.uuid;
                     const octoPayload = orderData.octo_payload;
 
@@ -1921,11 +1950,35 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                         pricing: orderData.order?.pricing || orderData.pricing || { original: 0, retail: 0, currency: "EUR" }
                     };
 
+                    // El backend ya vació el carrito (musement_cart_clear() dentro de
+                    // musement_create_order()), pero la lista de productos del checkout
+                    // seguía mostrando los mismos items en pantalla porque nada la
+                    // volvía a pintar tras el pago -- daba la impresión de que "los
+                    // productos se quedan en el carrito" aunque la compra ya estaba hecha.
+                    // Antes esto simplemente vaciaba la caja, dejando la página con
+                    // aspecto de rota/vacía -- ahora se muestra un aviso de agradecimiento
+                    // en su lugar.
+                    const itemsBox = checkout.querySelector('.musement-checkout__items');
+                    if (itemsBox) {
+                        itemsBox.innerHTML =
+                            '<div class="musement-thankyou" style="padding: 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; text-align: center;">' +
+                                '<h3 style="margin: 0 0 8px 0; color: #166534;">🎉 ¡Gracias por tu compra!</h3>' +
+                                '<p style="margin: 0; color: #166534;">Tu reserva número <strong>' + bookingRef + '</strong> se ha confirmado correctamente.</p>' +
+                                '<div class="musement-thankyou-download"></div>' +
+                            '</div>';
+                    }
+                    const checkoutForm = checkout.querySelector('.musement-checkout__form');
+                    if (checkoutForm) {
+                        checkoutForm.hidden = true;
+                    }
+                    updateCartBadge({ items: [], summary: { total: 0, currency: 'EUR' } });
+
                     if (vouchers && vouchers.length > 0) {
-                        status.textContent = `✅ ¡Reserva confirmada! Nº: ${bookingRef.substring(0, 8)}... Puedes descargar tus vouchers:`;
+                        status.textContent = `✅ ¡Reserva confirmada! Nº: ${bookingRef}. Puedes descargar tus vouchers:`;
                         displayVouchers(vouchers);
+                        renderThankYouDownloadButton(checkout, vouchers[0].url);
                     } else {
-                        status.textContent = `✅ Pago confirmado. Nº reserva: ${bookingRef.substring(0, 8)}... Esperando generación de vouchers...`;
+                        status.textContent = `✅ Pago confirmado. Nº reserva: ${bookingRef}. Esperando generación de vouchers...`;
                     }
 
                     // Independientemente de si Musement ha devuelto el voucher al instante o

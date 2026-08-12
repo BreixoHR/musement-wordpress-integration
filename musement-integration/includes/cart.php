@@ -8,51 +8,55 @@ add_action('init', 'musement_cart_start_session', 1);
 
 function musement_cart_start_session(): void
 {
-    // 🧪 Diagnóstico de lentitud: esta función corre en el hook "init", es decir
-    // en TODAS las peticiones (páginas y AJAX), y puede disparar una llamada
-    // real a Musement (musement_create_remote_cart()) antes de que se ejecute
-    // cualquier otra lógica -- incluida musement_day_availability(). Además,
-    // como no hay ningún session_write_close() en el plugin, PHP mantiene
-    // bloqueado el fichero de sesión mientras dure la petición, así que
-    // peticiones concurrentes de la misma sesión se ejecutan en fila, no en
-    // paralelo. Estos logs sirven para confirmar si musement_create_remote_cart()
-    // se dispara una sola vez por sesión (normal) o se repite en cada petición
-    // (causa probable de los 25s medidos al pedir horarios).
-    $t0 = microtime(true);
-    $had_session = (bool) session_id();
-
+    // Esto corre en el hook "init", es decir, en TODA petición al sitio --
+    // cualquier página, no solo las de Musement -- así que aquí solo se
+    // prepara la sesión local. Antes esta función también creaba un carrito
+    // remoto en Musement (llamada real a su API) si no había ninguno en
+    // sesión, lo que significaba que cualquier bot/crawler que pasara por
+    // el sitio sin cookies generaba un carrito abandonado en Musement en
+    // cada visita -- se veían cientos de "Creating remote cart..." al día
+    // sin relación con compras reales. El carrito remoto ahora solo se crea
+    // de verdad la primera vez que hace falta (al añadir un producto), ver
+    // musement_ensure_remote_cart_id().
     if (!session_id() && !headers_sent()) {
         session_start();
     }
 
-    $session_hash = session_id() ? substr(md5(session_id()), 0, 8) : 'sin-sesion';
-    $ajax_action = sanitize_text_field($_POST['action'] ?? $_GET['action'] ?? '');
-    error_log('[MUSEMENT][SIMULADO] 🔎 start_session: session=' . $session_hash . ' habia_sesion_previa=' . ($had_session ? 'si' : 'no') . ' action=' . $ajax_action);
-
     if (!isset($_SESSION['musement_cart']) || !is_array($_SESSION['musement_cart'])) {
         $_SESSION['musement_cart'] = [];
     }
+}
 
-    $remote = $_SESSION['musement_remote_cart'] ?? null;
-    $valid_uuid = $remote['uuid'] ?? null;
+/**
+ * Devuelve el uuid del carrito remoto de la sesión, creando uno nuevo en
+ * Musement si todavía no existe. A diferencia de musement_remote_cart_get_id(),
+ * que solo lee lo que ya haya en sesión, esta función SÍ puede disparar una
+ * llamada real a Musement -- úsala solo en el momento en que de verdad hace
+ * falta un carrito (añadir un producto), no en comprobaciones de solo lectura.
+ */
+function musement_ensure_remote_cart_id(): ?string
+{
+    musement_cart_start_session();
 
-    if (!$valid_uuid) {
-        error_log('[MUSEMENT][SIMULADO] ⚠️ start_session: NO hay carrito remoto en sesión (' . $session_hash . '), creando uno nuevo -- llamada real a Musement');
-        $t_cart0 = microtime(true);
+    $cart_id = musement_remote_cart_get_id();
+    $cart_check = $cart_id ? musement_remote_cart_refresh() : null;
 
-        $new = musement_create_remote_cart();
-
-        $t_cart1 = microtime(true);
-        error_log('[MUSEMENT][SIMULADO] ⏱️ start_session: musement_create_remote_cart() tardó ' . round($t_cart1 - $t_cart0, 2) . 's (session=' . $session_hash . ')');
-
-        if (is_array($new) && !empty($new['uuid'])) {
-            $_SESSION['musement_remote_cart'] = $new;
-        }
-    } else {
-        error_log('[MUSEMENT][SIMULADO] ✅ start_session: carrito remoto ya existía en sesión (' . $session_hash . '), uuid=' . $valid_uuid);
+    if ($cart_check) {
+        return $cart_id;
     }
 
-    error_log('[MUSEMENT][SIMULADO] ⏱️ start_session total: ' . round(microtime(true) - $t0, 3) . 's (session=' . $session_hash . ', action=' . $ajax_action . ')');
+    if ($cart_id) {
+        error_log('[MUSEMENT] ❌ Could not refresh cart, recreating...');
+    }
+
+    $new_cart = musement_create_remote_cart();
+
+    if (is_array($new_cart) && !empty($new_cart['uuid'])) {
+        $_SESSION['musement_remote_cart'] = $new_cart;
+        return $new_cart['uuid'];
+    }
+
+    return null;
 }
 
 function musement_create_remote_cart(): ?array
@@ -269,6 +273,37 @@ function musement_remote_cart_find_matching_item(array $cart, array $local_item)
         $same_time = $remote_time === '' || $remote_time === (string) ($local_item['time'] ?? '');
 
         if ($same_product && $same_date && $same_time) {
+            return $remote_item;
+        }
+    }
+
+    // Para productos "musement-realtime", Musement sustituye el
+    // product_identifier cifrado que se envía al añadir al carrito por un id
+    // numérico propio en la respuesta -- comparar por product_identifier
+    // (arriba) nunca puede coincidir para estos productos, así que sin este
+    // intento adicional, cada sincronización del carrito (p.ej. al llegar al
+    // checkout) volvía a añadir el mismo producto otra vez sin parar, por
+    // muchas veces que se repitiera. activity_uuid + fecha + hora + tipo de
+    // entrada sí se mantienen estables entre el envío y la respuesta.
+    foreach ($remote_items as $remote_item) {
+        if (!is_array($remote_item)) {
+            continue;
+        }
+
+        $product_data = is_array($remote_item['product'] ?? null) ? $remote_item['product'] : [];
+        $price_tag = is_array($product_data['price_tag'] ?? null) ? $product_data['price_tag'] : [];
+
+        $remote_activity = (string) ($product_data['activity_uuid'] ?? '');
+        $remote_date = musement_remote_cart_item_value($remote_item, 'date');
+        $remote_time = musement_remote_cart_item_value($remote_item, 'time');
+        $remote_holder = (string) ($price_tag['ticket_holder_code'] ?? '');
+
+        $same_activity = $remote_activity !== '' && $remote_activity === (string) ($local_item['activity_uuid'] ?? '');
+        $same_date = $remote_date !== '' && $remote_date === (string) ($local_item['date'] ?? '');
+        $same_time = $remote_time !== '' && $remote_time === (string) ($local_item['time'] ?? '');
+        $same_holder = $remote_holder === '' || $remote_holder === (string) ($local_item['holder_code'] ?? '');
+
+        if ($same_activity && $same_date && $same_time && $same_holder) {
             return $remote_item;
         }
     }
@@ -639,29 +674,22 @@ function musement_remote_cart_sync_participants_from_local()
 
 function musement_remote_cart_add_item(array &$item)
 {
-    $cart_id = musement_remote_cart_get_id();
     $token = musement_get_access_token();
 
-    if (!$cart_id || !$token) {
+    if (!$token) {
         return musement_remote_cart_add_error(
             'musement_remote_cart_missing_auth',
-            __('Falta el carrito remoto o el token de Musement.', 'musement-integration')
+            __('Falta el token de Musement.', 'musement-integration')
         );
     }
 
-    $cart_check = musement_remote_cart_refresh();
-    if (!$cart_check) {
-        error_log('[MUSEMENT] ❌ Could not refresh cart, recreating...');
-        $new_cart = musement_create_remote_cart();
-        if ($new_cart && isset($new_cart['uuid'])) {
-            $_SESSION['musement_remote_cart'] = $new_cart;
-            $cart_id = $new_cart['uuid'];
-        } else {
-            return musement_remote_cart_add_error(
-                'musement_remote_cart_recreate_failed',
-                __('No se pudo recrear el carrito remoto de Musement.', 'musement-integration')
-            );
-        }
+    $cart_id = musement_ensure_remote_cart_id();
+
+    if (!$cart_id) {
+        return musement_remote_cart_add_error(
+            'musement_remote_cart_recreate_failed',
+            __('No se pudo crear el carrito remoto de Musement.', 'musement-integration')
+        );
     }
 
     $endpoint = sprintf(
@@ -865,29 +893,22 @@ function musement_remote_cart_add_items_batch(array &$items)
         return true;
     }
 
-    $cart_id = musement_remote_cart_get_id();
     $token = musement_get_access_token();
 
-    if (!$cart_id || !$token) {
+    if (!$token) {
         return musement_remote_cart_add_error(
             'musement_remote_cart_missing_auth',
-            __('Falta el carrito remoto o el token de Musement.', 'musement-integration')
+            __('Falta el token de Musement.', 'musement-integration')
         );
     }
 
-    $cart_check = musement_remote_cart_refresh();
-    if (!$cart_check) {
-        error_log('[MUSEMENT] ❌ Could not refresh cart, recreating...');
-        $new_cart = musement_create_remote_cart();
-        if ($new_cart && isset($new_cart['uuid'])) {
-            $_SESSION['musement_remote_cart'] = $new_cart;
-            $cart_id = $new_cart['uuid'];
-        } else {
-            return musement_remote_cart_add_error(
-                'musement_remote_cart_recreate_failed',
-                __('No se pudo recrear el carrito remoto de Musement.', 'musement-integration')
-            );
-        }
+    $cart_id = musement_ensure_remote_cart_id();
+
+    if (!$cart_id) {
+        return musement_remote_cart_add_error(
+            'musement_remote_cart_recreate_failed',
+            __('No se pudo crear el carrito remoto de Musement.', 'musement-integration')
+        );
     }
 
     $endpoint = sprintf(
@@ -1505,18 +1526,39 @@ function musement_cart_remove_ajax(): void
 
     musement_cart_start_session();
 
+    $remote_item_uuid = '';
+
     foreach ($_SESSION['musement_cart'] as $existing_item) {
-
         if (($existing_item['key'] ?? '') === $key) {
-
-            if (!empty($existing_item['remote_item_uuid'])) {
-
-                musement_remote_cart_remove_item(
-                    $existing_item['remote_item_uuid']
-                );
-            }
-
+            $remote_item_uuid = $existing_item['remote_item_uuid'] ?? '';
             break;
+        }
+    }
+
+    if ($remote_item_uuid) {
+        // Antes, si esta llamada fallaba (red, token, lo que sea), el resultado
+        // se ignoraba y el producto se quitaba del carrito local igualmente --
+        // el usuario veía que desaparecía, pero seguía en el carrito remoto de
+        // Musement. Con el tiempo eso iba acumulando productos "fantasma" que
+        // terminaban facturándose sin que el cliente los hubiera pagado. Ahora
+        // se reintenta una vez y, si sigue fallando, NO se toca el carrito
+        // local -- mejor que el usuario vea el producto seguir ahí a que
+        // desaparezca sin haberse quitado de verdad.
+        $removed_remote = musement_remote_cart_remove_item($remote_item_uuid);
+
+        if (!$removed_remote) {
+            error_log('[MUSEMENT] ❌ No se pudo quitar el item ' . $remote_item_uuid . ' del carrito remoto, reintentando...');
+            $removed_remote = musement_remote_cart_remove_item($remote_item_uuid);
+        }
+
+        if (!$removed_remote) {
+            error_log('[MUSEMENT] ❌ No se pudo quitar el item ' . $remote_item_uuid . ' del carrito remoto tras reintentar. No se quita del carrito local para no desincronizar.');
+            wp_send_json_error([
+                'message' => __('No se pudo quitar el producto del carrito de Musement. Inténtalo de nuevo.', 'musement-integration'),
+                'items' => musement_cart_items(),
+                'summary' => musement_cart_total(),
+            ], 502);
+            return;
         }
     }
 

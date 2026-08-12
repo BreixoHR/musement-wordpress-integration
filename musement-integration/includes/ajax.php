@@ -106,6 +106,90 @@ function musement_slot_payload($slot, array $group = []): array {
     ];
 }
 
+/**
+ * Porcentaje de margen configurado en wp-admin para una actividad concreta.
+ * Sin margen configurado, se suma 0 (misma fórmula, sin efecto) -- no se
+ * oculta el producto como sí pasa en el listado (musement_activities()).
+ */
+function musement_product_margin_percent(string $activity_uuid): float
+{
+    $margins = get_option('musement_product_margins', []);
+
+    return isset($margins[$activity_uuid]) && is_numeric($margins[$activity_uuid])
+        ? (float) $margins[$activity_uuid]
+        : 0.0;
+}
+
+/**
+ * Aplica el margen sobre un objeto de precio de Musement (value/currency/
+ * formatted_value/formatted_iso_value), redondeando a céntimos. Se borran los
+ * campos "formatted_*" en vez de recalcularlos a mano -- el frontend ya sabe
+ * formatear el precio final él solo cuando no vienen (normalizeProducts() en
+ * certified_calendar.php), así evitamos duplicar esa lógica y el riesgo de
+ * que el texto no case con el valor numérico.
+ */
+function musement_apply_margin_to_price(array $price, float $margin_percent): array
+{
+    if (!isset($price['value']) || !is_numeric($price['value'])) {
+        return $price;
+    }
+
+    $price['value'] = round(((float) $price['value']) * (1 + ($margin_percent / 100)), 2);
+    unset($price['formatted_value'], $price['formatted_iso_value']);
+
+    return $price;
+}
+
+/**
+ * Recorre la respuesta cruda de disponibilidad diaria de Musement
+ * (días -> groups[] -> slots[] -> products[]) y aplica el margen configurado
+ * para $activity_uuid sobre el precio neto de cada producto. Se hace aquí, en
+ * el servidor y sobre el precio que Musement acaba de devolver, para que el
+ * margen sea dinámico de verdad: si Musement cambia su precio neto, el
+ * porcentaje se recalcula sobre el neto nuevo en cada consulta -- y para que
+ * no se pueda manipular el precio final desde el navegador.
+ */
+function musement_apply_margin_to_availability($data, string $activity_uuid)
+{
+    if (!is_array($data)) {
+        return $data;
+    }
+
+    $margin_percent = musement_product_margin_percent($activity_uuid);
+
+    foreach ($data as &$day) {
+        if (!is_array($day) || empty($day['groups']) || !is_array($day['groups'])) {
+            continue;
+        }
+
+        foreach ($day['groups'] as &$group) {
+            if (!is_array($group) || empty($group['slots']) || !is_array($group['slots'])) {
+                continue;
+            }
+
+            foreach ($group['slots'] as &$slot) {
+                if (!is_array($slot) || empty($slot['products']) || !is_array($slot['products'])) {
+                    continue;
+                }
+
+                foreach ($slot['products'] as &$product) {
+                    if (!is_array($product) || empty($product['retail_price']) || !is_array($product['retail_price'])) {
+                        continue;
+                    }
+
+                    $product['retail_price'] = musement_apply_margin_to_price($product['retail_price'], $margin_percent);
+                }
+                unset($product);
+            }
+            unset($slot);
+        }
+        unset($group);
+    }
+    unset($day);
+
+    return $data;
+}
+
 function musement_day_availability() {
     check_ajax_referer('musement_ajax', 'nonce');
 
@@ -193,6 +277,9 @@ function musement_day_availability() {
     }
 
     error_log('[MUSEMENT] ✅ Datos recibidos correctamente. Tipo: ' . gettype($data));
+
+    $data = musement_apply_margin_to_availability($data, $uuid);
+
     wp_send_json_success($data);
 }
 
@@ -473,16 +560,27 @@ function musement_ajax_get_order_tickets() {
     }
     
     $all_tickets = [];
-    
+    // Un pedido con varias reservas de la MISMA actividad (fechas/horas
+    // distintas) repetía la consulta de tickets una vez por reserva -- como
+    // la API de tickets es por actividad, no por reserva, eso duplicaba cada
+    // ticket tantas veces como reservas hubiera de esa actividad. Se pide
+    // como mucho una vez por activity_uuid único.
+    $queried_activities = [];
+
     if (!empty($order['items']) && is_array($order['items'])) {
         foreach ($order['items'] as $item) {
             $activity_uuid = $item['product']['activity_uuid'] ?? $item['uuid'] ?? '';
-            $activity_name = $item['product']['name'] ?? $item['name'] ?? 'Actividad';
+            $activity_name = $item['product']['title'] ?? $item['product']['name'] ?? $item['name'] ?? 'Actividad';
             $item_status = $item['status'] ?? 'unknown';
-            
+
+            if (isset($queried_activities[$activity_uuid])) {
+                continue;
+            }
+            $queried_activities[$activity_uuid] = true;
+
             // Obtener tickets de esta actividad
             $tickets = musement_remote_get_activity_tickets($order_uuid, $activity_uuid);
-            
+
             if (!is_wp_error($tickets) && !empty($tickets)) {
                 foreach ($tickets as $ticket) {
                     $all_tickets[] = [
@@ -789,9 +887,6 @@ function musement_send_pdf_to_endpoint() {
     error_log('[MUSEMENT] 📤 Enviando payload al endpoint');
     error_log('[MUSEMENT] 📤 Order UUID: ' . $order_uuid);
     error_log('[MUSEMENT] 📤 Endpoint: ' . $endpoint_url);
-    // 🧪 Build de prueba: payload completo tal cual se manda a Salesforce, para
-    // poder revisarlo en musement-debug.log sin depender de la consola del navegador.
-    error_log('[MUSEMENT][SIMULADO] 📦 Payload completo: ' . wp_json_encode($payload, JSON_PRETTY_PRINT));
 
     if (!$order_uuid || !$endpoint_url) {
         wp_send_json_error(['message' => 'Faltan parámetros']);

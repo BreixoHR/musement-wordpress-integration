@@ -263,12 +263,32 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
     $order_contact = musement_octo_contact_payload($first_name, $last_name, $email, $phone);
 
     $bookings = [];
+    // El precio que Musement guarda en la orden es siempre su NETO -- no sabe
+    // nada del margen configurado en wp-admin. Sin esto, Salesforce recibía
+    // el neto de Musement en vez de lo que el cliente pagó de verdad. Se suma
+    // aquí, línea a línea, y se acumula para el total del pedido más abajo.
+    $order_total_with_margin = 0.0;
+    $order_total_currency = $total_price['currency'] ?? 'EUR';
 
     foreach ($items as $item) {
         $product_data = $item['product'] ?? [];
         $price = $item['retail_price_in_order_currency'] ?? $item['total_retail_price_in_order_currency'] ?? [];
         $amount = (float) ($price['value'] ?? 0);
         $currency = $price['currency'] ?? 'EUR';
+
+        $item_quantity_for_margin = max(1, (int) ($item['quantity'] ?? 1));
+        $item_margin_percent = function_exists('musement_product_margin_percent')
+            ? musement_product_margin_percent((string) ($product_data['activity_uuid'] ?? ''))
+            : 0.0;
+        // Redondea por unidad y LUEGO multiplica por la cantidad -- mismo
+        // orden que usa el frontend (certified_calendar.php) y la
+        // verificación de Stripe (musement_create_order()), para que no haya
+        // desajustes de céntimos entre lo cobrado y lo que ve Salesforce.
+        $net_unit_amount = $item_quantity_for_margin > 0 ? $amount / $item_quantity_for_margin : $amount;
+        $marked_up_unit_amount = round($net_unit_amount * (1 + ($item_margin_percent / 100)), 2);
+        $amount = round($marked_up_unit_amount * $item_quantity_for_margin, 2);
+        $order_total_with_margin += $amount;
+        $order_total_currency = $currency;
 
         $date_time = $product_data['date'] ?? '';
         $local_date_start = !empty($date_time) ? date('Y-m-d\TH:i:sP', strtotime($date_time)) : null;
@@ -424,10 +444,12 @@ function musement_build_octo_payload($order_data, $customer_data = [], $voucher_
             'contact' => $order_contact,
             'questionAnswers' => [],
             'pricing' => [
-                'original' => (int) (($total_price['value'] ?? 0) * 100),
-                'retail'   => (int) (($total_price['value'] ?? 0) * 100),
+                // Con margen aplicado (suma de las líneas de arriba), no el
+                // neto en bruto de Musement.
+                'original' => (int) round($order_total_with_margin * 100),
+                'retail'   => (int) round($order_total_with_margin * 100),
                 'net'      => 0,
-                'currency' => $total_price['currency'] ?? 'EUR',
+                'currency' => $order_total_currency,
                 'currencyPrecision' => 2,
                 'includedTaxes' => [],
             ]

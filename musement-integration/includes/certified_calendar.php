@@ -646,12 +646,13 @@ function musement_certified_calendar_shortcode($atts)
 
         // Si el shortcode se procesa más de una vez en la misma carga de página
         // (habitual con plugins de SEO/algunos temas que pasan el contenido por
-        // "the_content" más de una vez), este <script> se ejecuta dos o más
-        // veces y crea "state" independientes con listeners duplicados sobre el
-        // mismo botón, y cada uno dispara su propio loadMonthAvailability() --
-        // esto es lo que causaba la ráfaga de peticiones a musement_month_availability
-        // (y de rebote, el error fantasma "Selecciona fecha y horario"). Marcamos
-        // el elemento para que solo se inicialice una vez.
+        // "the_content" más de una vez), este <script> se ejecuta dos veces y
+        // crea dos "state" independientes con dos listeners sobre el mismo botón.
+        // Uno de los dos nunca se entera de la fecha/horario ya elegidos, así que
+        // al pulsar "Añadir al carrito" muestra "Selecciona fecha y horario" un
+        // instante -- mientras el otro listener, con el estado correcto, sí añade
+        // el producto, por eso el aviso desaparece sin que la compra falle de
+        // verdad. Marcamos el elemento para que solo se inicialice una vez.
         if (widget.dataset.musementInitialized === 'true') {
             return;
         }
@@ -738,7 +739,16 @@ function musement_certified_calendar_shortcode($atts)
                             dayElem.style.background = '#edfaef';
                             dayElem.style.borderRadius = '4px';
                         } else {
+                            // "flatpickr-disabled" por sí sola es solo estética -- flatpickr
+                            // no la usa para bloquear el click (eso solo pasa con la opción
+                            // "disable" al construir el calendario, no con clases añadidas
+                            // después). Sin pointer-events, el día se veía normal y seguía
+                            // siendo clicable, así que el usuario llegaba a un horario agotado.
                             dayElem.classList.add('flatpickr-disabled');
+                            dayElem.style.pointerEvents = 'none';
+                            dayElem.style.opacity = '0.4';
+                            dayElem.style.cursor = 'not-allowed';
+                            dayElem.setAttribute('aria-disabled', 'true');
                         }
                     }
                 }
