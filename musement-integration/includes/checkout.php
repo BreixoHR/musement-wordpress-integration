@@ -35,6 +35,19 @@ function musement_checkout_start_ajax(): void
 {
     check_ajax_referer('musement_ajax', 'nonce');
 
+    // musement_checkout_start_ajax() era el único endpoint de carrito sin
+    // ningún candado -- si "pagar" se solapaba con una eliminación de
+    // producto todavía en curso (lenta: llama al DELETE de Musement), las dos
+    // peticiones sincronizaban el carrito remoto en paralelo y el pedido
+    // final podía terminar con un producto duplicado. Ver
+    // musement_cart_session_lock_acquire().
+    if (!musement_cart_session_lock_acquire()) {
+        wp_send_json_error([
+            'message' => __('Tu carrito se esta actualizando, espera un momento y vuelve a intentarlo.', 'musement-integration'),
+        ], 409);
+        return;
+    }
+
     $items = musement_cart_items();
     $summary = musement_cart_total($items);
     $customer = musement_checkout_customer_from_post();

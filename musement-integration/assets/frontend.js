@@ -1512,11 +1512,38 @@
                 item.unit_price_formatted || money(Number(item.unit_price || 0) * Number(item.quantity || 1), item.currency)
             ].filter(Boolean).join(' - ');
             row.querySelector('button').addEventListener('click', function () {
+                const removeBtn = this;
+                const submitBtn = checkout.querySelector('.musement-checkout__submit');
+
+                // Este botón no se desactivaba: si la eliminación tardaba (llama
+                // al DELETE de Musement, puede ir lento) el usuario podía pulsar
+                // "Pagar" mientras la eliminación seguía en curso -- dos
+                // peticiones mutando el mismo carrito de sesión a la vez podían
+                // dejar un producto duplicado en el pedido final. El servidor ya
+                // lo bloquea (musement_cart_session_lock_acquire()), pero además
+                // evitamos aquí que se pueda disparar esa carrera desde el propio
+                // navegador.
+                removeBtn.disabled = true;
+                if (submitBtn) {
+                    submitBtn.disabled = true;
+                }
+
                 post('musement_cart_remove', { key: item.key }).then(function (json) {
                     if (json && json.success) {
                         renderCheckout(checkout, json.data);
                         updateCartBadge(json.data);
                         window.location.reload();
+                        return;
+                    }
+
+                    removeBtn.disabled = false;
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                    }
+                }).catch(function () {
+                    removeBtn.disabled = false;
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
                     }
                 });
             });

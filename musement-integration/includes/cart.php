@@ -75,6 +75,27 @@ function musement_cart_expire_if_abandoned(): void
 }
 
 /**
+ * Candado por sesión (MySQL GET_LOCK, atómico entre procesos PHP distintos)
+ * para que dos peticiones que mutan el carrito de la MISMA sesión -- añadir,
+ * quitar, iniciar checkout -- nunca corran en paralelo. Sin esto, "quitar
+ * producto" (lento: llama al DELETE de Musement) solapado con "pagar" podía
+ * dejar el carrito remoto con un producto duplicado que terminaba metido en
+ * el pedido final, aunque el usuario solo quería uno.
+ *
+ * El candado se libera solo, sin llamada explícita: GET_LOCK lo mantiene
+ * MySQL mientras dure la conexión de $wpdb, que se cierra en cuanto termina
+ * la petición (wp_send_json_* llama a wp_die()).
+ *
+ * @return bool false si otra petición de esta misma sesión sigue en curso.
+ */
+function musement_cart_session_lock_acquire(int $timeout = 15): bool
+{
+    musement_cart_start_session();
+
+    return musement_order_lock_acquire('musement_cart_session_' . md5(session_id()), $timeout);
+}
+
+/**
  * Devuelve el uuid del carrito remoto de la sesión, creando uno nuevo en
  * Musement si todavía no existe. A diferencia de musement_remote_cart_get_id(),
  * que solo lee lo que ya haya en sesión, esta función SÍ puede disparar una
@@ -1402,6 +1423,13 @@ function musement_cart_add_ajax(): void
 {
     check_ajax_referer('musement_ajax', 'nonce');
 
+    if (!musement_cart_session_lock_acquire()) {
+        wp_send_json_error([
+            'message' => __('Tu carrito se esta actualizando, espera un momento y vuelve a intentarlo.', 'musement-integration'),
+        ], 409);
+        return;
+    }
+
     // Idempotencia: si el mismo "añadir al carrito" (mismo producto/fecha/horario/
     // participantes/tipos de entrada) llega dos veces casi al mismo tiempo -- doble o
     // triple clic en el botón, reintento de red, etc. -- ignoramos el duplicado en vez
@@ -1649,6 +1677,13 @@ function musement_cart_get_ajax(): void
 function musement_cart_remove_ajax(): void
 {
     check_ajax_referer('musement_ajax', 'nonce');
+
+    if (!musement_cart_session_lock_acquire()) {
+        wp_send_json_error([
+            'message' => __('Tu carrito se esta actualizando, espera un momento y vuelve a intentarlo.', 'musement-integration'),
+        ], 409);
+        return;
+    }
 
     $key = isset($_POST['key'])
         ? sanitize_key(wp_unslash($_POST['key']))
