@@ -1924,8 +1924,22 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
             }
             
             const vouchers = result.data.vouchers || [];
-            
+
             if (vouchers.length > 0) {
+                // Se para el sondeo AQUI, antes de arrancar la cadena async
+                // (pedir tickets -> fusionar PDF -> enviar a Salesforce), no
+                // al final de ella. Esa cadena puede tardar mas de los 10s del
+                // intervalo (varias llamadas de red seguidas), y si el
+                // intervalo volvia a disparar mientras tanto, encontraba los
+                // mismos vouchers otra vez y mandaba una SEGUNDA copia
+                // completa de la reserva a Salesforce -- Musement y Stripe
+                // solo se tocan una vez (estan protegidos en el servidor),
+                // pero este envio a Salesforce no tenia ninguna proteccion.
+                if (monitoringInterval) {
+                    clearInterval(monitoringInterval);
+                    monitoringInterval = null;
+                }
+
                 fetch(MUSEMENT.ajax, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1938,16 +1952,11 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                 .then(r => r.json())
                 .then(ticketResult => {
                     const tickets = ticketResult.success ? ticketResult.data.tickets : [];
-                    
+
                     showPayloadWithUrls(vouchers, tickets, originalOrderData);
 
                     displayDocuments(vouchers, tickets, statusElement, checkout, bookingRef);
                     renderThankYouDownloadButton(checkout, vouchers[0] && vouchers[0].url);
-                    
-                    if (monitoringInterval) {
-                        clearInterval(monitoringInterval);
-                        monitoringInterval = null;
-                    }
                 })
                 .catch(err => console.error('Error obteniendo tickets:', err));
             } else if (attempts >= 20) {
