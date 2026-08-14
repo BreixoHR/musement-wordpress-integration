@@ -67,7 +67,17 @@ function musement_checkout_start_ajax(): void
     }
 
     $items = musement_cart_items();
-    $summary = musement_cart_total($items);
+    $local_summary = musement_cart_total($items);
+
+    // El importe que se cobra en Stripe (musement_payment_create_session() lee
+    // $order['total']) tiene que salir del carrito remoto YA sincronizado y
+    // podado arriba, no del local: es la misma fuente que usa después
+    // musement_create_order() para verificar el pago, así que ambos números no
+    // pueden divergir -- ver musement_remote_cart_total_with_margin().
+    $summary = musement_remote_cart_total_with_margin(
+        (float) ($local_summary['total'] ?? 0),
+        (string) ($local_summary['currency'] ?? 'EUR')
+    );
 
     $order_id = musement_orders_create($customer, $items, $summary);
     $order = musement_orders_get($order_id);

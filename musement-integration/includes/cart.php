@@ -25,6 +25,53 @@ function musement_cart_start_session(): void
     if (!isset($_SESSION['musement_cart']) || !is_array($_SESSION['musement_cart'])) {
         $_SESSION['musement_cart'] = [];
     }
+
+    musement_cart_expire_if_abandoned();
+}
+
+/**
+ * Marca el carrito como "tocado" ahora mismo. Se llama cada vez que se añade,
+ * quita o sincroniza algo, para que musement_cart_expire_if_abandoned() sepa
+ * cuánto lleva el carrito sin actividad real.
+ */
+function musement_cart_touch(): void
+{
+    $_SESSION['musement_cart_touched_at'] = time();
+}
+
+/**
+ * Si un carrito (local y/o remoto) lleva más de 2 horas sin ningún cambio, se
+ * considera abandonado -- el cliente entró, seleccionó algo y nunca volvió --
+ * y se borra igual que si hubiera pulsado "vaciar carrito": local y en
+ * Musement. Antes no existía ningún timeout ni limpieza, así que un carrito
+ * remoto de un intento interrumpido podía quedarse reteniendo el item para
+ * siempre (y, sin la poda de musement_remote_cart_sync_from_local(), acababa
+ * inflando el total de un checkout posterior sobre esa misma sesión).
+ */
+function musement_cart_expire_if_abandoned(): void
+{
+    if (empty($_SESSION['musement_cart']) && empty($_SESSION['musement_remote_cart'])) {
+        return;
+    }
+
+    $last_touch = (int) ($_SESSION['musement_cart_touched_at'] ?? 0);
+
+    if (!$last_touch) {
+        musement_cart_touch();
+        return;
+    }
+
+    if ((time() - $last_touch) < (2 * HOUR_IN_SECONDS)) {
+        return;
+    }
+
+    error_log('[MUSEMENT] 🧹 Carrito abandonado (mas de 2h sin actividad), limpiando.');
+
+    // musement_cart_clear() vuelve a llamar a musement_cart_start_session(),
+    // que volvería a entrar aquí -- tocamos el timestamp ANTES de limpiar para
+    // que esa llamada anidada vea el carrito como "reciente" y no reentre en bucle.
+    musement_cart_touch();
+    musement_cart_clear();
 }
 
 /**
@@ -983,6 +1030,8 @@ function musement_remote_cart_sync_from_local()
         $cart = $new_cart;
     }
 
+    $matched_remote_uuids = [];
+
     foreach ($_SESSION['musement_cart'] as $index => $raw_item) {
         $item = musement_cart_normalize_item($raw_item);
         $matched = musement_remote_cart_find_matching_item($cart, $item);
@@ -991,6 +1040,7 @@ function musement_remote_cart_sync_from_local()
             $remote_uuid = musement_remote_cart_item_uuid($matched);
             if ($remote_uuid) {
                 $item['remote_item_uuid'] = $remote_uuid;
+                $matched_remote_uuids[$remote_uuid] = true;
             }
 
             $_SESSION['musement_cart'][$index] = $item;
@@ -1027,8 +1077,34 @@ function musement_remote_cart_sync_from_local()
             );
         }
 
+        if (!empty($item['remote_item_uuid'])) {
+            $matched_remote_uuids[$item['remote_item_uuid']] = true;
+        }
+
         $_SESSION['musement_cart'][$index] = $item;
         $cart = $_SESSION['musement_remote_cart'] ?? musement_remote_cart_refresh();
+    }
+
+    // Poda: cualquier item que siga en el carrito remoto pero ya no corresponda
+    // a ningún item del carrito local (p.ej. de un intento de checkout anterior
+    // interrumpido, o de un cambio de fecha/horario) se elimina aquí. Sin esto
+    // se quedaba huérfano en Musement para siempre -- no hay otro sitio que lo
+    // limpie -- inflando el total remoto por encima de lo que el cliente ve y
+    // paga, y provocando "el importe pagado no coincide con el carrito" DESPUÉS
+    // de que Stripe ya hubiera cobrado la tarjeta.
+    $cart_for_pruning = musement_remote_cart_refresh() ?: $cart;
+
+    foreach (musement_remote_cart_items_from_response(is_array($cart_for_pruning) ? $cart_for_pruning : []) as $remote_item) {
+        if (!is_array($remote_item)) {
+            continue;
+        }
+
+        $remote_uuid = musement_remote_cart_item_uuid($remote_item);
+
+        if ($remote_uuid && !isset($matched_remote_uuids[$remote_uuid])) {
+            error_log('[MUSEMENT] 🧹 Eliminando item huérfano del carrito remoto: ' . $remote_uuid);
+            musement_remote_cart_remove_item($remote_uuid);
+        }
     }
 
     $participants_sync = musement_remote_cart_sync_participants_from_local();
@@ -1044,7 +1120,59 @@ function musement_remote_cart_sync_from_local()
         );
     }
 
+    musement_cart_touch();
+
     return $refreshed_cart;
+}
+
+/**
+ * Total real del carrito remoto de Musement, con el margen de wp-admin ya
+ * aplicado línea a línea (Musement solo conoce su precio neto, no el margen).
+ *
+ * Esta es la ÚNICA función que calcula "cuánto hay que cobrar": la usan tanto
+ * musement_checkout_start_ajax() (para crear el PaymentIntent de Stripe) como
+ * musement_create_order() (para verificar después que lo cobrado coincide).
+ * Antes cada sitio recalculaba el total por su cuenta -- uno desde el carrito
+ * local, el otro desde el remoto -- y podían divergir (carrito remoto con
+ * items huérfanos, redondeos, etc.), lo que cobraba al cliente un importe y
+ * luego rechazaba la reserva por "no coincide con el carrito" sin devolver el
+ * dinero. Al compartir la misma fuente, ambos números no pueden desincronizarse.
+ */
+function musement_remote_cart_total_with_margin(float $fallback_total = 0.0, string $fallback_currency = 'EUR'): array
+{
+    $cart = musement_remote_cart_refresh();
+    $items = musement_remote_cart_items_from_response(is_array($cart) ? $cart : []);
+
+    if (empty($items)) {
+        return [
+            'total' => round($fallback_total, 2),
+            'currency' => $fallback_currency,
+        ];
+    }
+
+    $total = 0.0;
+    $currency = $fallback_currency;
+
+    foreach ($items as $remote_item) {
+        if (!is_array($remote_item)) {
+            continue;
+        }
+
+        $product_data = is_array($remote_item['product'] ?? null) ? $remote_item['product'] : [];
+        $net_unit_price = (float) ($product_data['retail_price']['value'] ?? 0);
+        $activity_uuid = (string) ($product_data['activity_uuid'] ?? '');
+        $quantity = max(1, (int) ($remote_item['quantity'] ?? 1));
+        $margin_percent = musement_product_margin_percent($activity_uuid);
+
+        $marked_up_unit_price = round($net_unit_price * (1 + ($margin_percent / 100)), 2);
+        $total += round($marked_up_unit_price * $quantity, 2);
+        $currency = (string) ($product_data['retail_price']['currency'] ?? $currency);
+    }
+
+    return [
+        'total' => round($total, 2),
+        'currency' => $currency,
+    ];
 }
 
 function musement_remote_cart_remove_item(string $remote_item_uuid): bool
@@ -1474,6 +1602,8 @@ function musement_cart_add_ajax(): void
 
     $response = musement_cart_payload();
 
+    musement_cart_touch();
+
     // Éxito parcial: se añadieron algunos tipos de entrada pero no todos
     if (!empty($errors)) {
         $response['partial_errors'] = $errors;
@@ -1571,6 +1701,8 @@ function musement_cart_remove_ajax(): void
         )
     );
 
+    musement_cart_touch();
+
     wp_send_json_success(musement_cart_payload());
 }
 
@@ -1604,6 +1736,7 @@ function musement_cart_clear(): void
     }
 
     unset($_SESSION['musement_remote_cart']);
+    unset($_SESSION['musement_cart_touched_at']);
 
     musement_cart_start_session();
 }

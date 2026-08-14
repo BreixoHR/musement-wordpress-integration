@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Musement Integration
  * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 2.12.011
+ * Version: 2.12.014
  * Author: Breixo A. Herrera
  * Text Domain: musement-integration
  */
@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.013');
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.014');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
@@ -365,46 +365,15 @@ function musement_create_order() {
 
     // El importe a verificar contra Stripe tiene que ser el TOTAL REAL del
     // carrito remoto en este momento (no el del carrito local calculado antes
-    // de sincronizar, $summary): si el carrito remoto arrastraba productos de
-    // un intento anterior sin limpiar del todo, su total puede ser mayor que
-    // el del carrito local -- validar contra el local dejaba pasar el pedido
-    // igualmente.
-    //
-    // Además, el total que devuelve Musement es siempre su precio NETO -- no
-    // sabe nada del margen configurado en wp-admin. Hay que sumarle el margen
-    // de cada producto (por actividad -- puede haber varias en el mismo
-    // carrito, cada una con su propio margen) para que coincida con lo que el
-    // frontend le cobró al cliente vía Stripe. Se redondea por unidad y LUEGO
-    // se multiplica por la cantidad, en el mismo orden que usa el frontend al
-    // calcular el precio (certified_calendar.php + musement_apply_margin_to_price()
-    // en ajax.php), para que no haya un desajuste de céntimos por redondear
-    // en distinto orden.
-    $remote_cart_for_total = musement_remote_cart_refresh();
-    $remote_items_for_total = musement_remote_cart_items_from_response(is_array($remote_cart_for_total) ? $remote_cart_for_total : []);
-
-    $remote_total = 0.0;
-    $remote_currency = (string) ($summary['currency'] ?? 'EUR');
-
-    if (!empty($remote_items_for_total)) {
-        foreach ($remote_items_for_total as $remote_item) {
-            if (!is_array($remote_item)) {
-                continue;
-            }
-
-            $product_data = is_array($remote_item['product'] ?? null) ? $remote_item['product'] : [];
-            $net_unit_price = (float) ($product_data['retail_price']['value'] ?? 0);
-            $activity_uuid = (string) ($product_data['activity_uuid'] ?? '');
-            $quantity = max(1, (int) ($remote_item['quantity'] ?? 1));
-            $margin_percent = musement_product_margin_percent($activity_uuid);
-
-            $marked_up_unit_price = round($net_unit_price * (1 + ($margin_percent / 100)), 2);
-            $remote_total += round($marked_up_unit_price * $quantity, 2);
-            $remote_currency = (string) ($product_data['retail_price']['currency'] ?? $remote_currency);
-        }
-        $remote_total = round($remote_total, 2);
-    } else {
-        $remote_total = (float) ($summary['total'] ?? 0);
-    }
+    // de sincronizar, $summary), calculado con musement_remote_cart_total_with_margin()
+    // -- la MISMA función que usa musement_checkout_start_ajax() para fijar el
+    // importe del PaymentIntent, así que ambos números no pueden divergir.
+    $remote_total_data = musement_remote_cart_total_with_margin(
+        (float) ($summary['total'] ?? 0),
+        (string) ($summary['currency'] ?? 'EUR')
+    );
+    $remote_total = $remote_total_data['total'];
+    $remote_currency = $remote_total_data['currency'];
 
     // Verificamos el pago DIRECTAMENTE contra Stripe antes de crear u homologar
     // ninguna reserva en Musement. Antes de esto, cualquiera podía llamar a este
