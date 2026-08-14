@@ -1153,6 +1153,18 @@ function musement_certified_calendar_shortcode($atts)
                 state.selectedLanguage = null;
             }
 
+            // Algunos productos (p.ej. entradas sin colas de uso libre) no tienen
+            // horario real: Musement los representa igualmente como un grupo
+            // TIME-BASED con un único slot a las "23:59", que no es una hora de
+            // verdad -- es como marca "sin horario fijo, válido todo el día". Sin
+            // este caso especial se mostraba "23:59" al cliente como si fuera un
+            // horario real que tuviera que elegir, cuando el producto se puede usar
+            // en cualquier momento del día seleccionado.
+            var isFlexibleAllDay = groups.length === 1 &&
+                (groups[0].slots || []).length === 1 &&
+                groups[0].slots[0] &&
+                groups[0].slots[0].time === '23:59';
+
             var html = '';
 
             // Filtro de idioma (solo si hay más de uno disponible)
@@ -1167,7 +1179,9 @@ function musement_certified_calendar_shortcode($atts)
                 html += '</div>';
             }
 
-            html += '<div style="margin-top: 10px;"><strong>Horarios disponibles:</strong></div>';
+            if (!isFlexibleAllDay) {
+                html += '<div style="margin-top: 10px;"><strong>Horarios disponibles:</strong></div>';
+            }
             var hasAnySlotRendered = false;
 
             groups.forEach(function(group) {
@@ -1212,7 +1226,8 @@ function musement_certified_calendar_shortcode($atts)
                         '" data-language-name="' + (language.name || '') +
                         '" data-min-buy="' + (slot.min_buy || 1) +
                         '" data-products-b64="' + productsB64 + '">';
-                    html += '<span class="slot-time">' + (slot.time || 'Horario flexible') + '</span>';
+                    var timeLabel = isFlexibleAllDay ? 'Entrada válida todo el día' : (slot.time || 'Horario flexible');
+                    html += '<span class="slot-time">' + timeLabel + '</span>';
                     html += '<span class="slot-price">' + priceLabel + '</span>';
                     if (language.code || language.name) {
                         html += '<span class="slot-status available">' + (language.name || language.code) + '</span>';
@@ -1294,6 +1309,16 @@ function musement_certified_calendar_shortcode($atts)
                     loadSupplierQuestions(widgetId);
                 });
             });
+
+            // Entrada de horario libre ("23:59" = todo el día, ver isFlexibleAllDay
+            // arriba): no hay nada que elegir, así que se selecciona sola en cuanto
+            // se pinta -- el cliente nunca ve un selector para un único horario falso.
+            if (isFlexibleAllDay) {
+                var onlyFlexibleSlot = container.querySelector('.slot-item:not(.unavailable)');
+                if (onlyFlexibleSlot) {
+                    onlyFlexibleSlot.click();
+                }
+            }
         }
 
         // ============================================================

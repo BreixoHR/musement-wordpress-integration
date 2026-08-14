@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Musement Integration
  * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 2.12.016
+ * Version: 2.12.017
  * Author: Breixo A. Herrera
  * Text Domain: musement-integration
  */
@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.016');
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.017');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');

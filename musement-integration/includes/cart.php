@@ -1226,16 +1226,23 @@ function musement_remote_cart_remove_item(string $remote_item_uuid): bool
     ]);
 
     if (is_wp_error($res)) {
-        error_log($res->get_error_message());
+        error_log('[MUSEMENT] ❌ Remote remove item ' . $remote_item_uuid . ' WP_Error: ' . $res->get_error_message());
         return false;
     }
 
     $status = wp_remote_retrieve_response_code($res);
 
     if ($status !== 204) {
-        error_log('Remote remove failed: ' . wp_remote_retrieve_body($res));
+        // Antes este fallo no dejaba rastro con el prefijo [MUSEMENT] (ni
+        // confirmaba nunca el ÉXITO), así que en el log no se podía saber si
+        // un item que "se intentó podar" (musement_remote_cart_sync_from_local())
+        // de verdad se borró en Musement o se quedó vivo -- y si se quedaba
+        // vivo, podía terminar metido en el pedido final igualmente.
+        error_log('[MUSEMENT] ❌ Remote remove item ' . $remote_item_uuid . ' failed. Status: ' . $status . ' Response: ' . wp_remote_retrieve_body($res));
         return false;
     }
+
+    error_log('[MUSEMENT] ✅ Remote remove item ' . $remote_item_uuid . ' succeeded (204).');
 
     musement_remote_cart_refresh();
 
