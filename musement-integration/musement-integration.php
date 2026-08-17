@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Musement Integration
  * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 2.12.017
+ * Version: 2.12.018
  * Author: Breixo A. Herrera
  * Text Domain: musement-integration
  */
@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.017');
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.018');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
@@ -336,17 +336,16 @@ function musement_create_order() {
         return;
     }
 
-    $remote_sync = musement_remote_cart_sync_from_local();
-    if (is_wp_error($remote_sync)) {
-        delete_transient($order_lock_key);
-        musement_order_lock_release($mysql_lock_name);
-        wp_send_json_error([
-            'message' => $remote_sync->get_error_message(),
-            'remote_error' => $remote_sync->get_error_data(),
-        ], 502);
-        return;
-    }
-
+    // OJO: aquí NO se vuelve a llamar a musement_remote_cart_sync_from_local().
+    // Ese sync completo (añadir lo que falte + podar huérfanos) ya se ejecutó
+    // en musement_checkout_start_ajax(), justo antes de crear el PaymentIntent
+    // de Stripe -- el carrito remoto que se acaba de cobrar es exactamente el
+    // que dejó esa sincronización. Repetirla aquí no aporta nada (el cliente no
+    // edita el carrito mientras rellena la tarjeta) y sí tiene un coste real:
+    // cada sync es una nueva ronda de "intentar emparejar cada item otra vez",
+    // y si un item no se reconocía como ya presente, se volvía a añadir --
+    // dejando dos items vivos para un único producto justo antes de crear el
+    // pedido en Musement. Esta era la causa de las reservas duplicadas.
     $cart_uuid = musement_remote_cart_get_id() ?: $cart_uuid;
 
 
