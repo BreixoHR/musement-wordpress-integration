@@ -1785,19 +1785,124 @@ function musement_cart_clear(): void
 
 
 /**
- * Actualiza los datos del cliente en el carrito remoto de Musement
- * 
- * @param array $customer_data Datos del cliente (email, firstname, lastname, phone, country_id)
- * @return bool
+ * Recorre recursivamente el árbol de errores de validación que Musement
+ * devuelve bajo errors.extra_customer_data.form.children.* (formato tipo
+ * Symfony Forms: cada nodo puede ser un grupo con más "children" o un campo
+ * hoja con "type"/"label"/"required"/"errors"). Cada actividad de Musement
+ * puede exigir un conjunto de campos de cliente completamente distinto (DNI,
+ * fecha de nacimiento, nacionalidad...) -- en vez de mantener una lista fija
+ * por producto (inviable con 3000+ actividades), esto lee la propia respuesta
+ * de Musement para descubrir en cada compra qué campo hace falta de verdad.
+ *
+ * @return array<int, array{path: string[], label: string, type: string, required: bool}>
  */
-function musement_remote_cart_update_customer(array $customer_data): bool
+function musement_parse_customer_schema_errors(array $node, array $path = []): array
+{
+    $missing = [];
+
+    if (!empty($node['children']) && is_array($node['children'])) {
+        foreach ($node['children'] as $key => $child) {
+            if (!is_array($child)) {
+                continue;
+            }
+
+            $missing = array_merge($missing, musement_parse_customer_schema_errors($child, array_merge($path, [(string) $key])));
+        }
+
+        return $missing;
+    }
+
+    // Nodo hoja (sin más "children"): si trae errores de validación, es un
+    // campo real que Musement necesita y que este envío no incluyó (o incluyó vacío).
+    if (!empty($node['errors']) && is_array($node['errors']) && !empty($path)) {
+        $missing[] = [
+            'path' => $path,
+            'label' => (string) ($node['label'] ?? end($path)),
+            'type' => (string) ($node['type'] ?? 'text'),
+            'required' => array_key_exists('required', $node) ? (bool) $node['required'] : true,
+        ];
+    }
+
+    return $missing;
+}
+
+/**
+ * @return array<int, array{path: string[], label: string, type: string, required: bool}>
+ */
+function musement_extract_missing_customer_fields(array $error_body): array
+{
+    $extra = $error_body['errors']['extra_customer_data'] ?? null;
+
+    if (!is_array($extra) || empty($extra['form']) || !is_array($extra['form'])) {
+        return [];
+    }
+
+    return musement_parse_customer_schema_errors($extra['form']);
+}
+
+/**
+ * Reconstruye la estructura anidada que espera "extra_customer_data" a partir
+ * de un mapa plano "ruta.con.puntos" => valor (la forma en que el frontend
+ * manda los campos que el cliente rellenó). El anidado real (cuántos niveles,
+ * qué claves) varía por producto -- por eso se reconstruye genéricamente en
+ * vez de asumir una forma fija tipo ["profile" => ["dateOfBirth" => ...]].
+ *
+ * @param array<string, string> $flat_fields
+ */
+function musement_build_extra_customer_data_payload(array $flat_fields): array
+{
+    $result = [];
+
+    foreach ($flat_fields as $dotted_path => $value) {
+        $keys = array_filter(explode('.', (string) $dotted_path), 'strlen');
+
+        if (empty($keys)) {
+            continue;
+        }
+
+        $cursor = &$result;
+        $last_index = count($keys) - 1;
+
+        foreach (array_values($keys) as $index => $raw_key) {
+            $key = sanitize_text_field($raw_key);
+
+            if ($index === $last_index) {
+                $cursor[$key] = sanitize_text_field((string) $value);
+                break;
+            }
+
+            if (!isset($cursor[$key]) || !is_array($cursor[$key])) {
+                $cursor[$key] = [];
+            }
+
+            $cursor = &$cursor[$key];
+        }
+
+        unset($cursor);
+    }
+
+    return $result;
+}
+
+/**
+ * Actualiza los datos del cliente en el carrito remoto de Musement.
+ *
+ * @param array $customer_data Datos del cliente (email, firstname, lastname, phone, country_id)
+ * @param array $extra_customer_data Datos adicionales específicos del proveedor/actividad
+ *                                    (ver musement_build_extra_customer_data_payload()),
+ *                                    descubiertos dinámicamente a partir de un intento previo fallido.
+ * @return true|WP_Error WP_Error con code 'musement_customer_extra_data_required' y
+ *                        error_data['missing_fields'] cuando a Musement le falta algún
+ *                        dato de cliente que este plugin todavía no ha pedido.
+ */
+function musement_remote_cart_update_customer(array $customer_data, array $extra_customer_data = [])
 {
     $cart_id = musement_remote_cart_get_id();
     $token = musement_get_access_token();
 
     if (!$cart_id || !$token) {
         error_log('[Musement] Cannot update cart customer: missing cart_id or token');
-        return false;
+        return new WP_Error('musement_customer_update_missing_data', __('Falta el carrito remoto o el token de Musement.', 'musement-integration'));
     }
 
     // ✅ Endpoint correcto: PUT /carts/{cartUuid}/customer
@@ -1813,11 +1918,13 @@ function musement_remote_cart_update_customer(array $customer_data): bool
         'lastname' => $customer_data['last_name'] ?? '',
     ];
 
-
-
     // Añadir country si existe
     if (!empty($customer_data['country_id'])) {
         $body['country'] = ['id' => (int) $customer_data['country_id']];
+    }
+
+    if (!empty($extra_customer_data)) {
+        $body['extra_customer_data'] = $extra_customer_data;
     }
 
     error_log('[Musement] Updating cart customer data: ' . wp_json_encode($body));
@@ -1840,7 +1947,7 @@ function musement_remote_cart_update_customer(array $customer_data): bool
 
     if (is_wp_error($res)) {
         error_log('[Musement] Cart customer update error: ' . $res->get_error_message());
-        return false;
+        return $res;
     }
 
     $status = wp_remote_retrieve_response_code($res);
@@ -1849,11 +1956,34 @@ function musement_remote_cart_update_customer(array $customer_data): bool
     if ($status < 200 || $status >= 300) {
         error_log('[Musement] Cart customer update failed. Status: ' . $status);
         error_log('[Musement] Response: ' . $response_body);
-        return false;
+
+        $decoded = json_decode($response_body, true);
+        $missing_fields = is_array($decoded) ? musement_extract_missing_customer_fields($decoded) : [];
+
+        if (!empty($missing_fields)) {
+            return new WP_Error(
+                'musement_customer_extra_data_required',
+                __('Este proveedor necesita datos adicionales del cliente para confirmar la reserva.', 'musement-integration'),
+                [
+                    'missing_fields' => $missing_fields,
+                    'status' => $status,
+                    'body' => $decoded,
+                ]
+            );
+        }
+
+        return new WP_Error(
+            'musement_customer_update_failed',
+            __('Musement rechazo los datos del cliente en el carrito remoto.', 'musement-integration'),
+            [
+                'status' => $status,
+                'body' => $decoded ?? $response_body,
+            ]
+        );
     }
 
     error_log('[Musement] Cart customer updated successfully');
-    
+
     // Refrescar el carrito en sesión para tener los datos actualizados
     musement_remote_cart_refresh();
 

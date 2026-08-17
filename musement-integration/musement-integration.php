@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Musement Integration
  * Description: Integracion basica con Musement para mostrar tours y disponibilidad.
- * Version: 2.12.018
+ * Version: 2.12.020
  * Author: Breixo A. Herrera
  * Text Domain: musement-integration
  */
@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.018');
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.020');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
@@ -349,10 +349,20 @@ function musement_create_order() {
     $cart_uuid = musement_remote_cart_get_id() ?: $cart_uuid;
 
 
-    $customer_update = musement_remote_cart_update_customer($customer_data);
-    if (!$customer_update) {
-        // No fallamos aquí, solo logueamos
-        error_log('[MUSEMENT] ⚠️ Could not update customer data in remote cart');
+    // Si musement_checkout_start_ajax() tuvo que pedirle al cliente algún dato
+    // extra (ver musement_extract_missing_customer_fields()), el frontend lo
+    // reenvía aquí para que el carrito llegue a musement_remote_create_order()
+    // con esos datos ya guardados -- no basta con que se guardaran en la
+    // llamada anterior, porque este PUT vuelve a mandar el objeto completo.
+    $extra_customer_data = musement_checkout_extra_customer_data_from_post();
+    $customer_update = musement_remote_cart_update_customer($customer_data, $extra_customer_data);
+    if (is_wp_error($customer_update)) {
+        // A estas alturas ya se ha cobrado la tarjeta -- no bloqueamos la
+        // creación del pedido por esto (mismo criterio que ya había), pero si
+        // es justo el motivo por el que Musement rechace el pedido más abajo,
+        // el mensaje de error de musement_remote_create_order() dejará claro
+        // por qué, en vez de fallar aquí con un mensaje genérico.
+        error_log('[MUSEMENT] ⚠️ Could not update customer data in remote cart: ' . $customer_update->get_error_message());
     }
 
     // Recogemos del formulario los datos del cliente

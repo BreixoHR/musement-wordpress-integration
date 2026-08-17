@@ -22,6 +22,44 @@ function musement_checkout_payment_method_from_post(): string
     return in_array($payment_method, $allowed, true) ? $payment_method : 'stripe';
 }
 
+/**
+ * Lee del POST el mapa plano "ruta.con.puntos" => valor con los campos de
+ * cliente adicionales que el frontend haya recogido (descubiertos en un
+ * intento anterior de musement_checkout_start, ver
+ * musement_extract_missing_customer_fields()), y lo reconstruye a la forma
+ * anidada que espera Musement.
+ */
+function musement_checkout_extra_customer_data_from_post(): array
+{
+    $raw = isset($_POST['extra_customer_data']) ? wp_unslash($_POST['extra_customer_data']) : '{}';
+    $flat = json_decode($raw, true);
+
+    if (!is_array($flat)) {
+        return [];
+    }
+
+    return musement_build_extra_customer_data_payload($flat);
+}
+
+/**
+ * Formato ligero (solo lo que el frontend necesita para pintar el campo) de
+ * la lista de campos de cliente que Musement acaba de decir que faltan.
+ */
+function musement_missing_customer_fields_for_response(array $missing_fields): array
+{
+    return array_map(
+        function (array $field): array {
+            return [
+                'key' => implode('.', $field['path']),
+                'label' => $field['label'],
+                'type' => $field['type'],
+                'required' => $field['required'],
+            ];
+        },
+        $missing_fields
+    );
+}
+
 function musement_debug_payloads_enabled(): bool
 {
     if (defined('MUSEMENT_DEBUG_PAYLOADS')) {
@@ -73,10 +111,35 @@ function musement_checkout_start_ajax(): void
         ], 502);
     }
 
-    if (!musement_remote_cart_update_customer($customer)) {
-        wp_send_json_error([
-            'message' => __('No se pudieron actualizar los datos del cliente en el carrito remoto.', 'musement-integration'),
-        ], 502);
+    $extra_customer_data = musement_checkout_extra_customer_data_from_post();
+    $customer_update = musement_remote_cart_update_customer($customer, $extra_customer_data);
+
+    if (is_wp_error($customer_update)) {
+        if ($customer_update->get_error_code() === 'musement_customer_extra_data_required') {
+            // Este proveedor/actividad concreto exige algún dato de cliente que
+            // este checkout todavía no pide (fecha de nacimiento, DNI...). En vez
+            // de mantener una lista de campos fija por producto -- inviable con
+            // 3000+ actividades en el catálogo -- Musement nos acaba de decir EN
+            // SU RESPUESTA qué campo falta, de qué tipo es y cómo se llama. Se
+            // manda esa lista al frontend para que pinte el campo que haga falta
+            // y reintente, sin necesidad de tocar código por cada producto nuevo.
+            // No se crea el PaymentIntent todavía -- no tiene sentido cobrar antes
+            // de saber si Musement va a aceptar la reserva.
+            $missing_fields = is_array($customer_update->get_error_data())
+                ? ($customer_update->get_error_data()['missing_fields'] ?? [])
+                : [];
+
+            wp_send_json_success([
+                'requires_extra_customer_data' => true,
+                'missing_fields' => musement_missing_customer_fields_for_response($missing_fields),
+            ]);
+            return;
+        }
+
+        // Cualquier otro fallo al actualizar el cliente no bloquea el checkout:
+        // si de verdad hace falta para crear la reserva, fallará más adelante en
+        // musement_create_order() con un error más claro.
+        error_log('[MUSEMENT] ⚠️ Could not update customer data in remote cart (checkout_start): ' . $customer_update->get_error_message());
     }
 
     $items = musement_cart_items();

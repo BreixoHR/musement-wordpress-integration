@@ -1601,6 +1601,86 @@
         });
     }
 
+    /**
+     * Pinta un mini-formulario con los campos de cliente que Musement acaba
+     * de decir que faltan (musement_extract_missing_customer_fields() en el
+     * servidor) -- distinto para cada proveedor/actividad, así que se
+     * construye en tiempo real a partir de lo que Musement devuelve, no de
+     * una lista fija por producto.
+     */
+    function renderExtraCustomerFieldsForm(checkout, missingFields, onSubmit) {
+        const form = checkout.querySelector('.musement-checkout__form');
+        const submitBtn = form.querySelector('button[type="submit"]');
+        let container = checkout.querySelector('.musement-extra-customer-data');
+
+        if (container) {
+            container.remove();
+        }
+
+        container = document.createElement('div');
+        container.className = 'musement-extra-customer-data';
+        container.style.cssText = 'margin: 12px 0; padding: 12px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa;';
+
+        const intro = document.createElement('p');
+        intro.textContent = 'Este proveedor necesita algún dato adicional para confirmar la reserva:';
+        intro.style.cssText = 'margin: 0 0 10px; font-size: 14px;';
+        container.appendChild(intro);
+
+        const inputs = {};
+
+        missingFields.forEach(function (field) {
+            const wrapper = document.createElement('div');
+            wrapper.style.cssText = 'margin-bottom: 10px;';
+
+            const label = document.createElement('label');
+            label.textContent = field.label + (field.required ? ' *' : '');
+            label.style.cssText = 'display: block; font-size: 13px; margin-bottom: 4px;';
+            label.setAttribute('for', 'musement-extra-' + field.key);
+
+            const input = document.createElement('input');
+            input.type = field.type === 'date' ? 'date' : (field.type === 'number' ? 'number' : 'text');
+            input.id = 'musement-extra-' + field.key;
+            input.required = !!field.required;
+            input.style.cssText = 'width: 100%; padding: 8px; box-sizing: border-box;';
+
+            wrapper.appendChild(label);
+            wrapper.appendChild(input);
+            container.appendChild(wrapper);
+
+            inputs[field.key] = input;
+        });
+
+        const continueBtn = document.createElement('button');
+        continueBtn.type = 'button';
+        continueBtn.textContent = 'Continuar';
+        container.appendChild(continueBtn);
+
+        continueBtn.addEventListener('click', function () {
+            let allFilled = true;
+            const values = {};
+
+            Object.keys(inputs).forEach(function (key) {
+                const value = inputs[key].value.trim();
+                if (inputs[key].required && !value) {
+                    allFilled = false;
+                    inputs[key].style.borderColor = '#d63638';
+                } else {
+                    inputs[key].style.borderColor = '';
+                }
+                values[key] = value;
+            });
+
+            if (!allFilled) {
+                return;
+            }
+
+            container.remove();
+            onSubmit(values);
+        });
+
+        form.insertBefore(container, submitBtn);
+    }
+
     function checkoutPaymentErrors(checkout) {
         return checkout.querySelector('.musement-payment-errors');
     }
@@ -2053,7 +2133,8 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                         first_name: firstName,
                         last_name: lastName,
                         email: email,
-                        phone: phone
+                        phone: phone,
+                        extra_customer_data: JSON.stringify(checkout._extraCustomerData || {})
                     }).then(function (result) {
                         if (!result || !result.success) {
                             throw new Error(result?.data?.message || 'Error al crear la reserva');
@@ -2164,6 +2245,7 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
             new FormData(form).forEach(function (value, key) {
                 payload[key] = value;
             });
+            payload.extra_customer_data = JSON.stringify(checkout._extraCustomerData || {});
 
             status.textContent = 'Preparando pago...';
             submit.disabled = true;
@@ -2171,6 +2253,22 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
             post('musement_checkout_start', payload).then(function (json) {
                 if (!json || !json.success) {
                     throw new Error(json && json.data ? json.data.message : '');
+                }
+
+                if (json.data && json.data.requires_extra_customer_data) {
+                    // Este proveedor/actividad exige algún dato de cliente que
+                    // este formulario no pedía (ver musement_checkout_start_ajax()
+                    // en checkout.php) -- se pinta el campo que Musement dice que
+                    // falta y, en cuanto el cliente lo rellena, se reintenta el
+                    // mismo envío con ese dato ya incluido.
+                    status.textContent = 'Falta un dato para continuar.';
+                    submit.disabled = false;
+
+                    renderExtraCustomerFieldsForm(checkout, json.data.missing_fields || [], function (values) {
+                        checkout._extraCustomerData = Object.assign({}, checkout._extraCustomerData || {}, values);
+                        form.requestSubmit();
+                    });
+                    return;
                 }
 
                 if (json.data && json.data.debug_payloads && Object.keys(json.data.debug_payloads).length) {
