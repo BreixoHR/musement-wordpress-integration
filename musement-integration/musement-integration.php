@@ -11,7 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MUSEMENT_INTEGRATION_VERSION', '2.12.020');
+define('MUSEMENT_INTEGRATION_VERSION', '2.12.021');
 define('MUSEMENT_INTEGRATION_DIR', plugin_dir_path(__FILE__));
 define('MUSEMENT_INTEGRATION_URL', plugin_dir_url(__FILE__));
 define('MUSEMENT_APPLICATION', '***');
@@ -631,12 +631,32 @@ function musement_inject_calendar_in_secundary() {
 
 add_action('plugins_loaded', 'musement_checkout_page_maybe_update_title', 20);
 
+/**
+ * Version para cache-busting de un asset propio: la del plugin mas la fecha de
+ * modificacion del fichero.
+ *
+ * Usando solo MUSEMENT_INTEGRATION_VERSION, cualquier cambio en frontend.js o
+ * frontend.css se quedaba invisible en el navegador (y en cualquier cache de
+ * pagina) hasta acordarse de subir la constante a mano, asi que un arreglo
+ * parecia no funcionar cuando en realidad el navegador seguia con el archivo
+ * viejo. Con filemtime, editar el fichero ya cambia la URL.
+ */
+function musement_asset_version(string $relative_path): string
+{
+    $file = MUSEMENT_INTEGRATION_DIR . $relative_path;
+    $mtime = file_exists($file) ? filemtime($file) : 0;
+
+    return $mtime
+        ? MUSEMENT_INTEGRATION_VERSION . '.' . $mtime
+        : MUSEMENT_INTEGRATION_VERSION;
+}
+
 add_action('wp_enqueue_scripts', function () {
     wp_enqueue_style(
         'musement-frontend',
         MUSEMENT_INTEGRATION_URL . 'assets/frontend.css',
         [],
-        MUSEMENT_INTEGRATION_VERSION
+        musement_asset_version('assets/frontend.css')
     );
 
     wp_enqueue_style(
@@ -674,7 +694,7 @@ add_action('wp_enqueue_scripts', function () {
         'musement-frontend',
         MUSEMENT_INTEGRATION_URL . 'assets/frontend.js',
         ['wp-element', 'flatpickr-es', 'stripe-js'],
-        MUSEMENT_INTEGRATION_VERSION,
+        musement_asset_version('assets/frontend.js'),
         true
     );
 

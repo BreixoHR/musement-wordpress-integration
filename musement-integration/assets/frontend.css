@@ -179,6 +179,14 @@
     text-decoration: none;
 }
 
+/* Carrito vacio: el enlace al checkout se apaga. Un <a> no admite "disabled",
+   asi que hace falta pointer-events para que el clic no llegue. */
+.musement-cart-bar__checkout.is-disabled {
+    opacity: 0.45;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
 .musement-cart-bar {
     position: fixed;
     right: 16px;
@@ -196,14 +204,23 @@
     font-size: 14px;
 }
 
+/* El checkout va dentro de una tarjeta propia para que se lea como un bloque
+   cerrado y no como texto suelto sobre el fondo de la pagina. */
 .musement-checkout {
     max-width: 920px;
     margin: 32px auto;
+    padding: 28px 32px 32px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 6px 24px rgba(15, 23, 42, 0.06);
 }
 
 .musement-checkout__title {
-    margin: 0 0 16px;
-    font-size: 28px;
+    margin: 0 0 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 26px;
     line-height: 1.2;
 }
 
@@ -212,13 +229,52 @@
     color: #475569;
 }
 
+/* La primera fila no lleva separador arriba: ya lo pone el titulo. */
 .musement-checkout__item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 16px;
     border-bottom: 1px solid #e2e8f0;
-    padding: 12px 0;
+    padding: 14px 0;
+}
+
+.musement-checkout__item-media {
+    flex: 0 0 auto;
+    width: 84px;
+    height: 84px;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #f1f5f9;
+}
+
+.musement-checkout__item-media img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}
+
+/* Empuja el precio y el boton de quitar a la derecha, y deja que el titulo largo
+   se parta en vez de estirar la fila. */
+.musement-checkout__item-info {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.musement-checkout__item-info strong {
+    display: block;
+    line-height: 1.3;
+}
+
+.musement-checkout__item-price {
+    flex: 0 0 auto;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.musement-checkout__item-price strong {
+    display: block;
+    font-size: 16px;
 }
 
 .musement-checkout__item span {
@@ -229,6 +285,7 @@
 }
 
 .musement-checkout__item button {
+    flex: 0 0 auto;
     min-height: 34px;
     border: 1px solid #fecaca;
     border-radius: 6px;
@@ -238,16 +295,35 @@
     padding: 0 10px;
 }
 
+@media (max-width: 600px) {
+    .musement-checkout__item {
+        flex-wrap: wrap;
+    }
+
+    .musement-checkout__item-media {
+        width: 64px;
+        height: 64px;
+    }
+
+    .musement-checkout__item-info {
+        flex: 1 1 60%;
+    }
+}
+
+/* El total cierra el bloque del carrito: sin borde inferior (lo pone la ultima
+   fila) y alineado a la derecha, donde estan los importes de cada linea. */
 .musement-checkout__total {
-    margin: 16px 0;
-    font-size: 18px;
+    margin: 0 0 24px;
+    padding: 16px 0;
+    text-align: right;
+    font-size: 20px;
     font-weight: 700;
 }
 
 .musement-checkout__fields {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 16px;
 }
 
 .musement-checkout__fields label {
@@ -264,6 +340,13 @@
     padding: 0 10px;
 }
 
+/* Campos que Musement exige para la actividad concreta (fecha de nacimiento,
+   documento...). Se pintan en la misma rejilla que el resto para que el cliente
+   los rellene de una sola pasada. */
+.musement-checkout__fields input.has-error {
+    border-color: #d63638;
+}
+
 .musement-checkout__submit {
     margin-top: 16px;
     min-height: 42px;
@@ -271,8 +354,12 @@
     font-weight: 700;
 }
 
+/* Separador entre "tus datos" y el pago, para que se vean como dos pasos y no
+   como una lista continua de campos. */
 .musement-payment {
-    margin-top: 20px;
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px solid #e2e8f0;
 }
 
 .musement-payment__title {
@@ -370,6 +457,20 @@
     background: #9CCC65 !important;
     color: black !important;
     border-color: none !important;
+}
+
+@media (max-width: 600px) {
+    /* En movil la tarjeta se pega mas a los bordes: 32px de padding a cada lado
+       se comen media pantalla. */
+    .musement-checkout {
+        margin: 16px auto;
+        padding: 20px 16px 24px;
+        border-radius: 10px;
+    }
+
+    .musement-checkout__title {
+        font-size: 22px;
+    }
 }
 
 @media (max-width: 420px) {

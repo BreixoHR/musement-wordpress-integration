@@ -1447,6 +1447,17 @@
         if (total) {
             total.textContent = money(summary.total, summary.currency);
         }
+
+        // Con el carrito vacio el enlace al checkout no lleva a ningun sitio util,
+        // asi que se apaga hasta que haya algo que pagar.
+        const checkoutLink = document.querySelector('.musement-cart-bar__checkout');
+
+        if (checkoutLink) {
+            const hasItems = items.length > 0;
+
+            checkoutLink.classList.toggle('is-disabled', !hasItems);
+            checkoutLink.setAttribute('aria-disabled', hasItems ? 'false' : 'true');
+        }
     }
 
     function ensureCartUuid() {
@@ -1466,7 +1477,9 @@
         bar.innerHTML =
             '<span><strong class="musement-cart-bar__count">0</strong> producto(s)</span>' +
             '<span class="musement-cart-bar__total">0.00 EUR</span>' +
-            '<a class="musement-cart-bar__checkout" href="' + (MUSEMENT.checkoutUrl || '#') + '">Checkout</a>';
+            // Arranca apagado y se enciende en updateCartBadge() al saber que hay
+            // productos, para que no haya un instante en que se pueda pulsar.
+            '<a class="musement-cart-bar__checkout is-disabled" aria-disabled="true" href="' + (MUSEMENT.checkoutUrl || '#') + '">Checkout</a>';
         document.body.appendChild(bar);
 
         ensureCartUuid();
@@ -1478,6 +1491,30 @@
                 updateCartBadge(json.data);
             }
         });
+    }
+
+    /**
+     * "2026-09-11" -> "11 sept 2026". Si la fecha no viene o no se puede
+     * interpretar se devuelve tal cual, que siempre es mejor que un "Invalid Date".
+     */
+    function formatCheckoutDate(value) {
+        if (!value) {
+            return '';
+        }
+
+        const parts = String(value).split('-');
+
+        if (parts.length !== 3) {
+            return value;
+        }
+
+        const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+
+        if (isNaN(date.getTime())) {
+            return value;
+        }
+
+        return date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
     }
 
     function renderCheckout(checkout, cart) {
@@ -1500,18 +1537,60 @@
         items.forEach(function (item) {
             const row = document.createElement('div');
             row.className = 'musement-checkout__item';
-            row.innerHTML =
-                '<div><strong></strong><span></span></div>' +
-                '<button type="button">Quitar</button>';
-            row.querySelector('strong').textContent = item.title || 'Tour';
-            row.querySelector('span').textContent = [
-                item.date,
-                item.time,
-                item.product_name,
-                'x' + item.quantity,
-                item.unit_price_formatted || money(Number(item.unit_price || 0) * Number(item.quantity || 1), item.currency)
-            ].filter(Boolean).join(' - ');
-            row.querySelector('button').addEventListener('click', function () {
+
+            if (item.image) {
+                const media = document.createElement('div');
+                const img = document.createElement('img');
+
+                media.className = 'musement-checkout__item-media';
+                img.src = item.image;
+                img.alt = item.title || 'Tour';
+                img.loading = 'lazy';
+                // Si la portada no carga, se quita el hueco en vez de dejar el
+                // icono de imagen rota en mitad del resumen.
+                img.addEventListener('error', function () {
+                    media.remove();
+                });
+
+                media.appendChild(img);
+                row.appendChild(media);
+            }
+
+            const info = document.createElement('div');
+            const title = document.createElement('strong');
+            const meta = document.createElement('span');
+
+            info.className = 'musement-checkout__item-info';
+            title.textContent = item.title || 'Tour';
+            meta.textContent = [
+                formatCheckoutDate(item.date),
+                // "00:00" no es una hora real: es lo que se guarda cuando el
+                // producto no tiene horario fijo (ver musement_cart_add_ajax),
+                // así que enseñarla solo confunde.
+                item.time && item.time !== '00:00' ? item.time : '',
+                item.product_name
+            ].filter(Boolean).join(' · ');
+
+            info.appendChild(title);
+            info.appendChild(meta);
+            row.appendChild(info);
+
+            const price = document.createElement('div');
+            price.className = 'musement-checkout__item-price';
+            price.innerHTML = '<strong></strong><span></span>';
+            price.querySelector('strong').textContent = money(
+                Number(item.unit_price || 0) * Number(item.quantity || 1),
+                item.currency
+            );
+            price.querySelector('span').textContent = 'x' + item.quantity;
+            row.appendChild(price);
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = 'Quitar';
+            row.appendChild(remove);
+
+            remove.addEventListener('click', function () {
                 const removeBtn = this;
                 const submitBtn = checkout.querySelector('.musement-checkout__submit');
 
@@ -1602,83 +1681,186 @@
     }
 
     /**
-     * Pinta un mini-formulario con los campos de cliente que Musement acaba
-     * de decir que faltan (musement_extract_missing_customer_fields() en el
-     * servidor) -- distinto para cada proveedor/actividad, así que se
-     * construye en tiempo real a partir de lo que Musement devuelve, no de
-     * una lista fija por producto.
+     * Añade al formulario principal los campos de cliente que Musement exige
+     * para esta actividad (musement_extract_missing_customer_fields() en el
+     * servidor) -- distintos para cada proveedor, así que se construyen en
+     * tiempo real a partir de lo que Musement devuelve, no de una lista fija.
+     *
+     * Antes esto era una caja aparte con su propio botón "Continuar", que
+     * aparecía solo DESPUÉS de intentar pagar. Ahora los campos se pintan
+     * junto a nombre/email/teléfono, así que el cliente los rellena de una
+     * sola vez y "Pagar" hace el pago de verdad.
+     *
+     * @return {boolean} true si ha añadido algún campo nuevo.
      */
-    function renderExtraCustomerFieldsForm(checkout, missingFields, onSubmit) {
-        const form = checkout.querySelector('.musement-checkout__form');
-        const submitBtn = form.querySelector('button[type="submit"]');
-        let container = checkout.querySelector('.musement-extra-customer-data');
+    function renderExtraCustomerFields(checkout, missingFields) {
+        const fields = checkout.querySelector('.musement-checkout__fields');
 
-        if (container) {
-            container.remove();
+        if (!fields || !missingFields || !missingFields.length) {
+            return false;
         }
 
-        container = document.createElement('div');
-        container.className = 'musement-extra-customer-data';
-        container.style.cssText = 'margin: 12px 0; padding: 12px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa;';
-
-        const intro = document.createElement('p');
-        intro.textContent = 'Este proveedor necesita algún dato adicional para confirmar la reserva:';
-        intro.style.cssText = 'margin: 0 0 10px; font-size: 14px;';
-        container.appendChild(intro);
-
-        const inputs = {};
+        let added = false;
 
         missingFields.forEach(function (field) {
-            const wrapper = document.createElement('div');
-            wrapper.style.cssText = 'margin-bottom: 10px;';
-
-            const label = document.createElement('label');
-            label.textContent = field.label + (field.required ? ' *' : '');
-            label.style.cssText = 'display: block; font-size: 13px; margin-bottom: 4px;';
-            label.setAttribute('for', 'musement-extra-' + field.key);
-
-            const input = document.createElement('input');
-            input.type = field.type === 'date' ? 'date' : (field.type === 'number' ? 'number' : 'text');
-            input.id = 'musement-extra-' + field.key;
-            input.required = !!field.required;
-            input.style.cssText = 'width: 100%; padding: 8px; box-sizing: border-box;';
-
-            wrapper.appendChild(label);
-            wrapper.appendChild(input);
-            container.appendChild(wrapper);
-
-            inputs[field.key] = input;
-        });
-
-        const continueBtn = document.createElement('button');
-        continueBtn.type = 'button';
-        continueBtn.textContent = 'Continuar';
-        container.appendChild(continueBtn);
-
-        continueBtn.addEventListener('click', function () {
-            let allFilled = true;
-            const values = {};
-
-            Object.keys(inputs).forEach(function (key) {
-                const value = inputs[key].value.trim();
-                if (inputs[key].required && !value) {
-                    allFilled = false;
-                    inputs[key].style.borderColor = '#d63638';
-                } else {
-                    inputs[key].style.borderColor = '';
-                }
-                values[key] = value;
-            });
-
-            if (!allFilled) {
-                return;
+            if (!field || !field.key || checkout.querySelector('[data-extra-customer-field="' + field.key + '"]')) {
+                return; // ya estaba pintado
             }
 
-            container.remove();
-            onSubmit(values);
+            const label = document.createElement('label');
+            const input = document.createElement('input');
+
+            label.className = 'musement-checkout__extra-field';
+            label.textContent = field.label + (field.required ? ' *' : '');
+
+            // Sin atributo "name": el envío recoge el formulario con FormData y
+            // estos campos no van sueltos en el payload, sino agrupados dentro de
+            // "extra_customer_data" (ver collectExtraCustomerData).
+            input.type = field.type === 'date' ? 'date' : (field.type === 'number' ? 'number' : 'text');
+            input.required = !!field.required;
+            input.dataset.extraCustomerField = field.key;
+
+            label.appendChild(input);
+            fields.appendChild(label);
+            added = true;
         });
 
-        form.insertBefore(container, submitBtn);
+        return added;
+    }
+
+    function extraCustomerFieldInputs(checkout) {
+        return Array.prototype.slice.call(checkout.querySelectorAll('[data-extra-customer-field]'));
+    }
+
+    function collectExtraCustomerData(checkout) {
+        const values = {};
+
+        extraCustomerFieldInputs(checkout).forEach(function (input) {
+            values[input.dataset.extraCustomerField] = input.value.trim();
+        });
+
+        return values;
+    }
+
+    /**
+     * Igual que extraCustomerFieldsComplete pero sin marcar nada en rojo: se usa
+     * para decidir en silencio si ya se puede montar la tarjeta, y sería muy
+     * desagradable teñir de rojo un campo que el cliente aún no ha tocado.
+     */
+    function extraCustomerFieldsFilled(checkout) {
+        return extraCustomerFieldInputs(checkout).every(function (input) {
+            return !input.required || input.value.trim();
+        });
+    }
+
+    function extraCustomerFieldsComplete(checkout) {
+        let complete = true;
+
+        extraCustomerFieldInputs(checkout).forEach(function (input) {
+            const missing = input.required && !input.value.trim();
+
+            input.classList.toggle('has-error', missing);
+
+            if (missing) {
+                complete = false;
+            }
+        });
+
+        return complete;
+    }
+
+    /**
+     * Monta el formulario de tarjeta solo, sin que el cliente pulse Pagar, en
+     * cuanto están todos los datos necesarios (los suyos y los que exija la
+     * actividad, como la edad).
+     *
+     * No se puede hacer antes: los huecos de la tarjeta necesitan un
+     * client_secret de Stripe, y ese sale de musement_checkout_start(), que crea
+     * el pedido local con los datos del cliente. Sin cliente no hay pedido que
+     * crear -- de ahí que se espere a tener el formulario completo en vez de
+     * montarlo al cargar la página.
+     */
+    function maybeAutoStartPayment(checkout, form) {
+        // _stripePayment: ya montado. _autoStarting: petición en vuelo -- sin este
+        // candado un segundo "change" reenviaría el formulario y se crearían dos
+        // pedidos para el mismo carrito.
+        if (checkout._stripePayment || checkout._autoStarting || form.hidden) {
+            return;
+        }
+
+        // Hasta que no se sabe si la actividad exige algún campo extra no se
+        // arranca: si no, se enviaría el formulario "completo" justo antes de que
+        // apareciera el campo de la edad, y el envío rebotaría para nada.
+        if (!checkout._requirementsChecked) {
+            return;
+        }
+
+        const data = {};
+
+        new FormData(form).forEach(function (value, key) {
+            data[key] = value;
+        });
+
+        if (!data.first_name || !data.last_name || !data.email || !data.phone) {
+            return;
+        }
+
+        if (!extraCustomerFieldsFilled(checkout)) {
+            return;
+        }
+
+        checkout._autoStarting = true;
+        form.requestSubmit();
+    }
+
+    /**
+     * Pregunta a Musement si esta actividad necesita algún dato extra del
+     * cliente, en cuanto hay datos suficientes para preguntarlo. Es la misma
+     * llamada que haría "Pagar", solo que adelantada, así que el campo aparece
+     * antes de pagar en vez de rebotar el pago.
+     *
+     * Si falla se ignora en silencio: el descubrimiento al pagar sigue estando
+     * como respaldo en el propio musement_checkout_start.
+     */
+    function probeCustomerRequirements(checkout, form, force) {
+        const data = {};
+
+        new FormData(form).forEach(function (value, key) {
+            data[key] = value;
+        });
+
+        // Con "force" (el sondeo de la carga de página) se pregunta aunque no
+        // haya ni un dato del cliente: es lo que permite enseñar el campo de
+        // edad desde el principio. El resto de sondeos esperan a tener los
+        // cuatro datos base para no preguntar a medio rellenar.
+        if (!force && (!data.first_name || !data.last_name || !data.email || !data.phone)) {
+            return Promise.resolve();
+        }
+
+        const extra = collectExtraCustomerData(checkout);
+        // Rellenar un campo extra puede destapar otro (Musement valida por
+        // niveles), así que su valor entra en la firma y vuelve a preguntarse.
+        const signature = JSON.stringify([data.first_name, data.last_name, data.email, data.phone, extra]);
+
+        if (checkout._requirementsSignature === signature) {
+            return Promise.resolve();
+        }
+
+        checkout._requirementsSignature = signature;
+
+        return post('musement_checkout_customer_requirements', {
+            first_name: data.first_name,
+            last_name: data.last_name,
+            email: data.email,
+            phone: data.phone,
+            extra_customer_data: JSON.stringify(extra)
+        }).then(function (json) {
+            if (json && json.success && json.data) {
+                renderExtraCustomerFields(checkout, json.data.missing_fields || []);
+            }
+        }).catch(function () {
+            checkout._requirementsSignature = null;
+        });
     }
 
     function checkoutPaymentErrors(checkout) {
@@ -2101,13 +2283,38 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
 
         initPaymentAccordion(checkout);
 
+        const checkoutForm = checkout.querySelector('.musement-checkout__form');
+
         post('musement_cart_get').then(function (json) {
-            if (json && json.success) {
-                renderCheckout(checkout, json.data);
+            if (!json || !json.success) {
+                return;
             }
+
+            renderCheckout(checkout, json.data);
+
+            if (!json.data || !json.data.items || !json.data.items.length) {
+                return;
+            }
+
+            // Nada más pintar el carrito se pregunta si esta actividad exige algún
+            // dato extra (edad, documento...), para que el campo esté ahí desde el
+            // principio en vez de aparecer después de pulsar Pagar.
+            probeCustomerRequirements(checkout, checkoutForm, true).then(function () {
+                checkout._requirementsChecked = true;
+                maybeAutoStartPayment(checkout, checkoutForm);
+            });
         });
 
-        checkout.querySelector('.musement-checkout__form').addEventListener('submit', function (event) {
+        // Y se vuelve a preguntar cuando el cliente termina de rellenar sus datos:
+        // con el cliente ya identificado Musement puede exigir algo más. "change"
+        // salta al salir de cada campo, así que no se pregunta en cada tecla.
+        checkoutForm.addEventListener('change', function () {
+            probeCustomerRequirements(checkout, checkoutForm).then(function () {
+                maybeAutoStartPayment(checkout, checkoutForm);
+            });
+        });
+
+        checkoutForm.addEventListener('submit', function (event) {
             event.preventDefault();
 
             const form = event.currentTarget;
@@ -2134,7 +2341,9 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                         last_name: lastName,
                         email: email,
                         phone: phone,
-                        extra_customer_data: JSON.stringify(checkout._extraCustomerData || {})
+                        extra_customer_data: JSON.stringify(
+                            Object.assign({}, checkout._extraCustomerData || {}, collectExtraCustomerData(checkout))
+                        )
                     }).then(function (result) {
                         if (!result || !result.success) {
                             throw new Error(result?.data?.message || 'Error al crear la reserva');
@@ -2242,10 +2451,19 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                 return;
             }
 
+            // Los campos extra que Musement pidió se rellenan ya en este mismo
+            // formulario, así que se validan aquí y no en un paso aparte.
+            if (!extraCustomerFieldsComplete(checkout)) {
+                status.textContent = 'Completa los datos que faltan para la reserva.';
+                return;
+            }
+
             new FormData(form).forEach(function (value, key) {
                 payload[key] = value;
             });
-            payload.extra_customer_data = JSON.stringify(checkout._extraCustomerData || {});
+            payload.extra_customer_data = JSON.stringify(
+                Object.assign({}, checkout._extraCustomerData || {}, collectExtraCustomerData(checkout))
+            );
 
             status.textContent = 'Preparando pago...';
             submit.disabled = true;
@@ -2256,18 +2474,21 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                 }
 
                 if (json.data && json.data.requires_extra_customer_data) {
-                    // Este proveedor/actividad exige algún dato de cliente que
-                    // este formulario no pedía (ver musement_checkout_start_ajax()
-                    // en checkout.php) -- se pinta el campo que Musement dice que
-                    // falta y, en cuanto el cliente lo rellena, se reintenta el
-                    // mismo envío con ese dato ya incluido.
-                    status.textContent = 'Falta un dato para continuar.';
+                    // Respaldo: normalmente el sondeo de probeCustomerRequirements()
+                    // ya ha pintado estos campos antes de llegar aquí. Si aun así
+                    // Musement descubre uno nuevo al pagar, se añade al formulario
+                    // y el cliente lo rellena sin salir de la misma pantalla.
+                    renderExtraCustomerFields(checkout, json.data.missing_fields || []);
+                    status.textContent = 'Falta un dato para completar la reserva.';
                     submit.disabled = false;
 
-                    renderExtraCustomerFieldsForm(checkout, json.data.missing_fields || [], function (values) {
-                        checkout._extraCustomerData = Object.assign({}, checkout._extraCustomerData || {}, values);
-                        form.requestSubmit();
-                    });
+                    const pending = extraCustomerFieldInputs(checkout).filter(function (input) {
+                        return !input.value.trim();
+                    })[0];
+
+                    if (pending) {
+                        pending.focus();
+                    }
                     return;
                 }
 
@@ -2307,6 +2528,10 @@ function buildFinalPayload(vouchers, tickets, orderData, mergedPdfUrl) {
                 status.textContent = error.message || 'No se pudo iniciar el pago.';
             }).finally(function () {
                 submit.disabled = false;
+                // Se libera el candado del montaje automático pase lo que pase: si
+                // esto falló, un cambio posterior en el formulario debe poder
+                // volver a intentarlo.
+                checkout._autoStarting = false;
             });
         });
     }

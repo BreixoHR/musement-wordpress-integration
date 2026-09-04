@@ -685,6 +685,15 @@ function musement_certified_calendar_shortcode($atts)
                 background: #f2f7f6;
             }
 
+            /* Carrito vacío: el enlace se ve apagado y no responde al clic. Un <a>
+               no admite "disabled", así que hace falta pointer-events. */
+            .musement-certified-calendar-wrapper .calendar-actions .btn-secondary.is-disabled,
+            .musement-cart-bar__checkout.is-disabled {
+                opacity: 0.45;
+                pointer-events: none;
+                cursor: not-allowed;
+            }
+
             .musement-certified-calendar-wrapper .calendar-actions .btn-secondary svg {
                 width: 18px;
                 height: 18px;
@@ -780,7 +789,11 @@ function musement_certified_calendar_shortcode($atts)
             <button class="btn-primary" id="add-cart-<?php echo esc_attr($widget_id); ?>" disabled>
                 Añadir al carrito
             </button>
-            <a class="btn-secondary" href="<?php echo esc_url(musement_checkout_url()); ?>">
+            <!-- Arranca deshabilitado: se activa en cuanto se sabe que el carrito
+                 tiene algo (ver refreshCartState()), para no mandar al cliente a un
+                 checkout vacío. -->
+            <a class="btn-secondary is-disabled" id="go-cart-<?php echo esc_attr($widget_id); ?>"
+               href="<?php echo esc_url(musement_checkout_url()); ?>" aria-disabled="true">
                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                     <path d="M3 3h2l2.4 12.4a2 2 0 0 0 2 1.6h8.2a2 2 0 0 0 2-1.6L21 8H6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                     <circle cx="9" cy="20" r="1.4" fill="currentColor"/>
@@ -798,7 +811,7 @@ function musement_certified_calendar_shortcode($atts)
                 <strong class="musement-cart-bar__count" id="cart-count-<?php echo esc_attr($widget_id); ?>">0</strong> producto(s)
             </span>
             <span class="musement-cart-bar__total" id="cart-total-<?php echo esc_attr($widget_id); ?>">0.00 EUR</span>
-            <a class="musement-cart-bar__checkout" href="<?php echo esc_url(musement_checkout_url()); ?>" style="color:white">
+            <a class="musement-cart-bar__checkout is-disabled" href="<?php echo esc_url(musement_checkout_url()); ?>" style="color:white" aria-disabled="true">
                 Checkout
             </a>
         </div>
@@ -833,6 +846,7 @@ function musement_certified_calendar_shortcode($atts)
         var productTitle = widget.dataset.title;
         var productPrice = parseFloat(widget.dataset.price) || 0;
         var productCurrency = widget.dataset.currency || 'EUR';
+        var productImage = widget.dataset.image || '';
 
         var state = {
             uuid: uuid,
@@ -1959,6 +1973,9 @@ function musement_certified_calendar_shortcode($atts)
                 nonce: '<?php echo wp_create_nonce('musement_ajax'); ?>',
                 activity_uuid: state.uuid,
                 title: state.name,
+                // Se manda la portada del producto para poder enseñarla luego en el
+                // resumen del checkout, donde solo había texto.
+                image: productImage,
                 date: state.selectedDate,
                 time: state.selectedSlot.time || '00:00',
                 product_identifier: mainItem.productIdentifier || '',
@@ -2056,9 +2073,9 @@ function musement_certified_calendar_shortcode($atts)
         function updateCartBadge(widgetId, cart) {
             var badge = document.querySelector('.musement-cart-bar__count');
             var total = document.querySelector('.musement-cart-bar__total');
+            var count = cart && cart.items ? cart.items.length : 0;
 
             if (badge) {
-                var count = cart && cart.items ? cart.items.length : 0;
                 badge.textContent = count;
             }
 
@@ -2066,7 +2083,52 @@ function musement_certified_calendar_shortcode($atts)
                 var summary = cart && cart.summary ? cart.summary : { total: 0, currency: 'EUR' };
                 total.textContent = summary.total.toFixed(2) + ' ' + summary.currency;
             }
+
+            setCartLinksEnabled(widgetId, count > 0);
         }
+
+        // "Ir al carrito" (y el "Checkout" de la barra flotante) llevaban a un
+        // checkout vacío cuando no había nada añadido, que es justo donde el cliente
+        // no puede hacer nada. Se apagan mientras el carrito esté vacío.
+        function setCartLinksEnabled(widgetId, hasItems) {
+            var links = [
+                document.getElementById('go-cart-' + widgetId),
+                document.querySelector('.musement-cart-bar__checkout')
+            ];
+
+            links.forEach(function(link) {
+                if (!link) return;
+                link.classList.toggle('is-disabled', !hasItems);
+                link.setAttribute('aria-disabled', hasItems ? 'false' : 'true');
+                link.title = hasItems ? '' : 'Añade algún producto al carrito para continuar';
+            });
+        }
+
+        // El carrito vive en la sesión de PHP, así que al cargar la página hay que
+        // preguntar por él: si el cliente ya tenía productos de antes, los enlaces
+        // deben salir activos y el contador con el número real, no a cero.
+        function refreshCartState(widgetId) {
+            var data = new FormData();
+            data.append('action', 'musement_cart_get');
+            data.append('nonce', '<?php echo wp_create_nonce('musement_ajax'); ?>');
+
+            fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
+                method: 'POST',
+                credentials: 'same-origin',
+                body: data
+            })
+            .then(function(response) { return response.json(); })
+            .then(function(json) {
+                if (json && json.success) {
+                    updateCartBadge(widgetId, json.data);
+                }
+            })
+            .catch(function(error) {
+                console.error('musement: no se pudo leer el carrito', error);
+            });
+        }
+
+        refreshCartState(widgetId);
     });
     </script>
 

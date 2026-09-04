@@ -129,9 +129,16 @@ function musement_checkout_start_ajax(): void
                 ? ($customer_update->get_error_data()['missing_fields'] ?? [])
                 : [];
 
+            $fields_for_response = musement_missing_customer_fields_for_response($missing_fields);
+
+            // Se memoriza para que el siguiente cliente de esta actividad vea el
+            // campo nada más entrar al checkout, sin tener que provocar el
+            // rechazo otra vez.
+            musement_checkout_remember_customer_requirements($fields_for_response);
+
             wp_send_json_success([
                 'requires_extra_customer_data' => true,
-                'missing_fields' => musement_missing_customer_fields_for_response($missing_fields),
+                'missing_fields' => $fields_for_response,
             ]);
             return;
         }
@@ -224,6 +231,163 @@ function musement_checkout_start_ajax(): void
 
     ]);
 }
+
+/**
+ * UUIDs de actividad distintos que hay ahora mismo en el carrito.
+ *
+ * @return string[]
+ */
+function musement_checkout_cart_activity_uuids(): array
+{
+    $uuids = [];
+
+    foreach (musement_cart_items() as $item) {
+        $uuid = (string) ($item['activity_uuid'] ?? '');
+
+        if ($uuid) {
+            $uuids[$uuid] = true;
+        }
+    }
+
+    return array_keys($uuids);
+}
+
+/**
+ * Guarda qué campos extra exige una actividad, para no tener que volver a
+ * descubrirlo con otra compra.
+ *
+ * Musement solo revela estos campos al rechazar un envío, así que el primer
+ * cliente que compra una actividad tiene que provocar ese rechazo. A partir de
+ * ahí lo sabemos, y todos los demás ven el campo nada más entrar al checkout.
+ *
+ * Solo se memoriza con una única actividad en el carrito: con varias no hay
+ * forma de saber a cuál pertenece cada campo, y atribuirlo a la equivocada
+ * pintaría un campo obligatorio de más en compras futuras.
+ */
+function musement_checkout_remember_customer_requirements(array $fields): void
+{
+    $uuids = musement_checkout_cart_activity_uuids();
+
+    if (count($uuids) !== 1) {
+        return;
+    }
+
+    // Un día: suficiente para que prácticamente ningún cliente se coma el rebote,
+    // y acotado por si el proveedor deja de exigir el campo (seguiríamos pidiéndolo
+    // hasta que caduque).
+    set_transient('musement_cust_req_' . md5($uuids[0]), $fields, DAY_IN_SECONDS);
+}
+
+/**
+ * Campos extra ya conocidos para lo que hay en el carrito. Sin llamadas a la API.
+ */
+function musement_checkout_cached_customer_requirements(): array
+{
+    $fields = [];
+    $seen = [];
+
+    foreach (musement_checkout_cart_activity_uuids() as $uuid) {
+        $cached = get_transient('musement_cust_req_' . md5($uuid));
+
+        if (!is_array($cached)) {
+            continue;
+        }
+
+        foreach ($cached as $field) {
+            $key = is_array($field) ? ($field['key'] ?? '') : '';
+
+            if (!$key || isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $fields[] = $field;
+        }
+    }
+
+    return $fields;
+}
+
+/**
+ * Sondeo de "¿te falta algún dato del cliente?" ANTES de pulsar Pagar.
+ *
+ * Musement solo dice qué campos extra exige una actividad cuando se le manda el
+ * cliente y los rechaza (ver musement_remote_cart_update_customer()). Eso se
+ * descubría al pulsar Pagar, lo que obligaba al cliente a: pagar -> aparece el
+ * campo -> rellenarlo -> pagar otra vez. Este endpoint hace la misma llamada
+ * antes, así que los campos se pintan dentro del formulario principal y "Pagar"
+ * ya no rebota.
+ *
+ * Se responde por dos vías, de más barata a más cara:
+ *   1. Lo ya aprendido de compras anteriores de esta misma actividad (cache).
+ *      Es lo que permite enseñar el campo nada más cargar el checkout, cuando
+ *      todavía no hay ni un dato del cliente que mandar.
+ *   2. Un sondeo real contra Musement con los datos que haya en el formulario.
+ *
+ * El sondeo es el mismo PUT que haría el pago, así que no añade ningún efecto
+ * nuevo sobre el carrito: solo lo adelanta.
+ */
+function musement_checkout_customer_requirements_ajax(): void
+{
+    check_ajax_referer('musement_ajax', 'nonce');
+
+    $empty = ['missing_fields' => []];
+
+    if (!musement_cart_items()) {
+        wp_send_json_success($empty);
+    }
+
+    $cached = musement_checkout_cached_customer_requirements();
+
+    if ($cached) {
+        wp_send_json_success([
+            'missing_fields' => $cached,
+            'source' => 'cache',
+        ]);
+    }
+
+    // Solo lectura de la sesión: si todavía no hay carrito remoto no se crea uno
+    // aquí (eso es cosa de añadir al carrito). Sin él no hay nada que sondear y
+    // el checkout sigue con el camino de siempre.
+    if (!musement_remote_cart_get_id()) {
+        wp_send_json_success($empty);
+    }
+
+    // Se sondea con lo que haya, incluso con el cliente vacío al cargar la
+    // página: la validación de Musement responde igualmente con el árbol de
+    // extra_customer_data, que es lo único que se lee aquí. Y como un envío
+    // incompleto se rechaza, no llega a escribir nada en el carrito.
+    $customer = musement_checkout_customer_from_post();
+
+    // El sondeo escribe en el carrito remoto, igual que el pago: si hay otra
+    // operación de carrito en curso se deja pasar en vez de esperar -- no es
+    // crítico, el descubrimiento al pagar sigue existiendo como respaldo.
+    if (!musement_cart_session_lock_acquire(2)) {
+        wp_send_json_success($empty);
+    }
+
+    $result = musement_remote_cart_update_customer(
+        $customer,
+        musement_checkout_extra_customer_data_from_post()
+    );
+
+    if (is_wp_error($result) && $result->get_error_code() === 'musement_customer_extra_data_required') {
+        $error_data = is_array($result->get_error_data()) ? $result->get_error_data() : [];
+        $fields = musement_missing_customer_fields_for_response($error_data['missing_fields'] ?? []);
+
+        musement_checkout_remember_customer_requirements($fields);
+
+        wp_send_json_success([
+            'missing_fields' => $fields,
+            'source' => 'probe',
+        ]);
+    }
+
+    wp_send_json_success($empty);
+}
+
+add_action('wp_ajax_musement_checkout_customer_requirements', 'musement_checkout_customer_requirements_ajax');
+add_action('wp_ajax_nopriv_musement_checkout_customer_requirements', 'musement_checkout_customer_requirements_ajax');
 
 function musement_checkout_test_paid_ajax(): void
 {

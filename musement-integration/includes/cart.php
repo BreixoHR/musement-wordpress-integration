@@ -1358,6 +1358,8 @@ function musement_cart_normalize_item(array $raw): array
 
         'activity_uuid' => sanitize_text_field($raw['activity_uuid'] ?? ''),
         'title' => sanitize_text_field($raw['title'] ?? ''),
+        // Portada del producto: solo se usa para pintar el resumen del checkout.
+        'image' => esc_url_raw($raw['image'] ?? ''),
 
         'date' => sanitize_text_field($raw['date'] ?? ''),
         'time' => sanitize_text_field($raw['time'] ?? ''),
@@ -1395,9 +1397,60 @@ function musement_cart_normalize_item(array $raw): array
     ];
 }
 
+/**
+ * Portada de una actividad, cacheada 12h.
+ *
+ * El widget manda la imagen al añadir al carrito, pero los productos que ya
+ * estuvieran en el carrito (o los añadidos desde otros widgets que no la pasan)
+ * se quedarían sin ella, así que aquí se rellena el hueco. Se cachea porque
+ * musement_cart_payload() se ejecuta en cada carga de página con carrito y no
+ * puede pagar una llamada a la API cada vez.
+ */
+function musement_activity_cover_image(string $activity_uuid): string
+{
+    if (!$activity_uuid) {
+        return '';
+    }
+
+    $cache_key = 'musement_cover_' . md5($activity_uuid);
+    $cached = get_transient($cache_key);
+
+    if ($cached !== false) {
+        return (string) $cached;
+    }
+
+    $product = musement_remote_get_product($activity_uuid);
+    $image = '';
+
+    if (is_wp_error($product)) {
+        error_log('[MUSEMENT] No se pudo obtener la portada de ' . $activity_uuid . ': ' . $product->get_error_message());
+    } elseif (is_array($product)) {
+        $image = (string) ($product['cover_image_url']
+            ?? $product['cover_image']['url']
+            ?? ($product['images'][0]['url'] ?? ''));
+
+        if (!$image) {
+            error_log('[MUSEMENT] La actividad ' . $activity_uuid . ' no trae portada; claves: ' . implode(',', array_keys($product)));
+        }
+    }
+
+    // El fallo también se cachea para no reintentar en cada carga, pero mucho
+    // menos tiempo: si es un problema pasajero (token caducado, timeout), no
+    // tiene sentido quedarse sin imagen medio día por un fallo de un segundo.
+    set_transient($cache_key, $image, $image ? 12 * HOUR_IN_SECONDS : 10 * MINUTE_IN_SECONDS);
+
+    return $image;
+}
+
 function musement_cart_payload(): array
 {
     $items = musement_cart_items();
+
+    foreach ($items as $index => $item) {
+        if (empty($item['image']) && !empty($item['activity_uuid'])) {
+            $items[$index]['image'] = musement_activity_cover_image((string) $item['activity_uuid']);
+        }
+    }
 
     return [
         'items' => $items,
@@ -1499,6 +1552,7 @@ function musement_cart_add_ajax(): void
     $base = [
         'activity_uuid' => isset($_POST['activity_uuid']) ? wp_unslash($_POST['activity_uuid']) : '',
         'title' => isset($_POST['title']) ? wp_unslash($_POST['title']) : '',
+        'image' => isset($_POST['image']) ? wp_unslash($_POST['image']) : '',
         'date' => isset($_POST['date']) ? wp_unslash($_POST['date']) : '',
         'time' => isset($_POST['time']) ? wp_unslash($_POST['time']) : '',
         'option_name' => isset($_POST['option_name']) ? wp_unslash($_POST['option_name']) : '',
@@ -1559,6 +1613,7 @@ function musement_cart_add_ajax(): void
         $item = musement_cart_normalize_item([
             'activity_uuid' => $base['activity_uuid'],
             'title' => $base['title'],
+            'image' => $base['image'],
             'date' => $base['date'],
             'time' => $base['time'],
             'type' => sanitize_text_field((string) ($breakdown['type'] ?? 'musement')),
