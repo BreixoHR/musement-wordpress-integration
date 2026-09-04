@@ -586,34 +586,6 @@ function musement_certified_calendar_shortcode($atts)
                 gap: 12px;
             }
 
-            /* Confirmar */
-            .musement-certified-calendar-wrapper .certified-confirm-btn {
-                width: 100%;
-                margin-top: 10px;
-                padding: 10px;
-                background: #7b2fbe;
-                color: #fff;
-                border: none;
-                border-radius: 6px;
-                font-size: 15px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: background 0.3s;
-            }
-
-            .musement-certified-calendar-wrapper .certified-confirm-btn:hover:not(:disabled) {
-                background: #5a1d8a;
-            }
-
-            .musement-certified-calendar-wrapper .certified-confirm-btn:disabled {
-                background: #ccc;
-                cursor: not-allowed;
-            }
-
-            .musement-certified-calendar-wrapper .certified-confirm-btn.confirmed {
-                background: #00a32a;
-            }
-
             /* Progress */
             .musement-certified-calendar-wrapper .certified-progress {
                 margin-top: 8px;
@@ -872,9 +844,16 @@ function musement_certified_calendar_shortcode($atts)
             // Idioma elegido para toda la reserva (ligado al horario/slot seleccionado)
             selectedLanguage: null,
             availability: {},
+            // Mes ('YYYY-MM') al que corresponde "availability". Solo se pintan/bloquean
+            // días cuando su mes es justo este: si la petición aún no ha llegado o ha
+            // fallado, el calendario se deja tal cual en vez de teñirlo entero de gris.
+            availabilityMonth: null,
             questions: [],
             participantCount: 1,
+            // Ya no se confirma a mano: updateProgress lo pone a true en cuanto todos
+            // los campos obligatorios de todos los participantes están rellenos.
             allConfirmed: false,
+            addingToCart: false,
             hasExtraData: widget.dataset.hasExtraData === 'true',
             requiresParticipants: widget.dataset.requiresParticipants === 'true',
             // Tipos de entrada (adulto/niño/etc.) disponibles para el horario seleccionado
@@ -930,24 +909,55 @@ function musement_certified_calendar_shortcode($atts)
                         String(date.getMonth() + 1).padStart(2, '0') + '-' +
                         String(date.getDate()).padStart(2, '0');
 
-                    if (state.availability && state.availability[dateStr]) {
-                        if (state.availability[dateStr] !== 'full') {
+                    // Días de los meses vecinos que flatpickr pinta para cuadrar la
+                    // rejilla: su disponibilidad no está cargada, así que se dejan
+                    // intactos para poder seguir usándolos como salto de mes.
+                    if (dayElem.classList.contains('prevMonthDay') ||
+                        dayElem.classList.contains('nextMonthDay')) {
+                        return;
+                    }
+
+                    // Días pasados: flatpickr ya los ha bloqueado por minDate y los pinta
+                    // a su manera, no hay que volver a atenuarlos.
+                    if (dayElem.classList.contains('flatpickr-disabled')) {
+                        return;
+                    }
+
+                    var status = state.availability ? state.availability[dateStr] : null;
+
+                    // Un día marcado 'full' se bloquea siempre, aunque el resto del mes
+                    // no se haya podido cargar: o está agotado, o ya se comprobó que no
+                    // tiene ningún horario.
+                    if (status !== 'full') {
+                        // Sin datos de este mes no se sabe nada todavía: no se toca nada.
+                        if (state.availabilityMonth !== dateStr.substring(0, 7)) {
+                            return;
+                        }
+
+                        if (status) {
                             dayElem.classList.add('available');
                             dayElem.style.background = '#edfaef';
                             dayElem.style.borderRadius = '4px';
-                        } else {
-                            // "flatpickr-disabled" por sí sola es solo estética -- flatpickr
-                            // no la usa para bloquear el click (eso solo pasa con la opción
-                            // "disable" al construir el calendario, no con clases añadidas
-                            // después). Sin pointer-events, el día se veía normal y seguía
-                            // siendo clicable, así que el usuario llegaba a un horario agotado.
-                            dayElem.classList.add('flatpickr-disabled');
-                            dayElem.style.pointerEvents = 'none';
-                            dayElem.style.opacity = '0.4';
-                            dayElem.style.cursor = 'not-allowed';
-                            dayElem.setAttribute('aria-disabled', 'true');
+                            return;
                         }
                     }
+
+                    // Aquí caen tanto los días agotados ('full') como los que la API ni
+                    // siquiera devuelve, que son los que no tienen ningún horario. Antes
+                    // solo se bloqueaban los primeros y los segundos quedaban clicables
+                    // con aspecto normal, así que el cliente elegía un día para acabar
+                    // leyendo "No hay horarios disponibles". Los dos casos significan lo
+                    // mismo -- no hay nada que reservar -- y se marcan igual.
+                    //
+                    // "flatpickr-disabled" por sí sola es solo estética: flatpickr no la
+                    // usa para bloquear el click (eso solo pasa con la opción "disable" al
+                    // construir el calendario, no con clases añadidas después). Sin
+                    // pointer-events el día seguiría siendo clicable.
+                    dayElem.classList.add('flatpickr-disabled');
+                    dayElem.style.pointerEvents = 'none';
+                    dayElem.style.opacity = '0.4';
+                    dayElem.style.cursor = 'not-allowed';
+                    dayElem.setAttribute('aria-disabled', 'true');
                 }
             });
 
@@ -974,16 +984,57 @@ function musement_certified_calendar_shortcode($atts)
             })
             .then(function(response) { return response.json(); })
             .then(function(response) {
-                if (response.success && response.data.days) {
-                    state.availability = response.data.days;
-                    if (fpInstance) {
-                        fpInstance.redraw();
-                    }
+                // Si el usuario ya ha cambiado de mes, esta respuesta llega tarde y
+                // pintaría el mes equivocado (o lo bloquearía entero).
+                if (currentMonthStr() !== monthStr) {
+                    return;
+                }
+
+                if (response && response.success) {
+                    // Un mes sin ningún día devuelto es información válida ("no hay
+                    // nada este mes"), no un fallo: se acepta el mapa vacío para que
+                    // esos días salgan en gris.
+                    state.availability = (response.data && response.data.days) || {};
+                    state.availabilityMonth = monthStr;
+                } else {
+                    // Fallo del endpoint: mejor dejar el calendario abierto que
+                    // bloquear días que quizá sí se pueden reservar.
+                    state.availabilityMonth = null;
+                }
+
+                console.log('musement: disponibilidad de ' + monthStr, state.availability);
+
+                if (fpInstance) {
+                    fpInstance.redraw();
                 }
             })
             .catch(function(error) {
                 console.error('Error:', error);
+                if (currentMonthStr() === monthStr) {
+                    state.availabilityMonth = null;
+                    if (fpInstance) {
+                        fpInstance.redraw();
+                    }
+                }
             });
+        }
+
+        function currentMonthStr() {
+            if (!fpInstance) return null;
+            return fpInstance.currentYear + '-' + String(fpInstance.currentMonth + 1).padStart(2, '0');
+        }
+
+        // Un día que el calendario daba por bueno pero cuyo endpoint de horarios
+        // devuelve cero horarios se marca como no disponible y se repinta, para que
+        // quede en gris igual que el resto y nadie vuelva a pincharlo.
+        function markDateUnavailable(dateStr) {
+            if (!dateStr) return;
+            state.availability = state.availability || {};
+            if (state.availability[dateStr] === 'full') return;
+            state.availability[dateStr] = 'full';
+            if (fpInstance) {
+                fpInstance.redraw();
+            }
         }
 
         // ============================================================
@@ -1131,6 +1182,10 @@ function musement_certified_calendar_shortcode($atts)
 
             if (!groups || groups.length === 0) {
                 container.innerHTML = '<p style="color: #999; text-align: center; padding: 10px;">No hay horarios disponibles</p>';
+                // La respuesta ha sido correcta y no trae ni un horario: el día no es
+                // reservable aunque el calendario lo diera por bueno. Se marca para que
+                // pase a gris y no se pueda volver a elegir.
+                markDateUnavailable(state.selectedDate);
                 return;
             }
 
@@ -1450,11 +1505,6 @@ function musement_certified_calendar_shortcode($atts)
             html += renderParticipantForms(widgetId, questions, currentCount);
             html += '</div>';
             
-            // Botón confirmar
-            html += '<button class="certified-confirm-btn" id="confirm-all-' + widgetId + '" disabled>';
-            html += 'Confirmar todos los participantes';
-            html += '</button>';
-            
             // Progress
             html += '<div class="certified-progress" id="progress-' + widgetId + '">Progreso: 0/0 campos completados</div>';
 
@@ -1473,33 +1523,13 @@ function musement_certified_calendar_shortcode($atts)
                     
                     var container = document.getElementById('participants-container-' + widgetId);
                     container.innerHTML = renderParticipantForms(widgetId, state.questions, newCount);
-                    
-                    state.allConfirmed = false;
-                    var confirmBtn = document.getElementById('confirm-all-' + widgetId);
-                    if (confirmBtn) {
-                        confirmBtn.disabled = true;
-                        confirmBtn.textContent = 'Confirmar todos los participantes';
-                        confirmBtn.style.background = '#7b2fbe';
-                    }
+
+                    // Al cambiar el número de participantes hay formularios nuevos sin
+                    // rellenar: updateProgress vuelve a calcular si la selección está
+                    // completa y bloquea "Añadir al carrito" si ya no lo está.
                     updateProgress(widgetId);
                     attachQuestionEvents(widgetId);
                 });
-            });
-
-            // Evento confirmar
-            document.getElementById('confirm-all-' + widgetId).addEventListener('click', function() {
-                var allValid = validateAllParticipants(widgetId);
-                if (allValid) {
-                    state.allConfirmed = true;
-                    this.textContent = 'Todos confirmados';
-                    this.disabled = true;
-                    this.style.background = '#00a32a';
-                    updateSummary(widgetId);
-                    showMessage(widgetId, 'success', 'Todos los participantes han sido confirmados');
-                    document.getElementById('add-cart-' + widgetId).disabled = false;
-                } else {
-                    showMessage(widgetId, 'error', 'Completa todos los campos obligatorios para cada participante');
-                }
             });
 
             attachQuestionEvents(widgetId);
@@ -1726,22 +1756,11 @@ function musement_certified_calendar_shortcode($atts)
                 progressEl.textContent = msg;
             }
             
-            // Habilitar botón
-            var confirmBtn = document.getElementById('confirm-all-' + widgetId);
-            if (confirmBtn) {
-                var allRequiredFilledGlobal = requiredFields === 0 || filledRequired === requiredFields;
-                confirmBtn.disabled = !allRequiredFilledGlobal;
-                if (allRequiredFilledGlobal && filledFields === totalFields) {
-                    confirmBtn.style.background = '#00a32a';
-                    confirmBtn.textContent = 'Confirmar todos los participantes';
-                } else if (allRequiredFilledGlobal) {
-                    confirmBtn.style.background = '#f0b400';
-                    confirmBtn.textContent = 'Faltan campos opcionales (puedes confirmar)';
-                } else {
-                    confirmBtn.style.background = '#7b2fbe';
-                    confirmBtn.textContent = 'Confirmar todos los participantes';
-                }
-            }
+            // Ya no hay paso manual de "Confirmar participantes": en cuanto todos los
+            // campos obligatorios (incluido el tipo de entrada) están rellenos, la
+            // selección se da por válida y "Añadir al carrito" se desbloquea solo.
+            state.allConfirmed = requiredFields === 0 || filledRequired === requiredFields;
+            updateSummary(widgetId);
         }
 
         function validateAllParticipants(widgetId) {
@@ -1880,7 +1899,13 @@ function musement_certified_calendar_shortcode($atts)
 
             content.innerHTML = html;
             summary.classList.add('visible');
-            addBtn.disabled = false;
+
+            // Mientras se está enviando el carrito el botón sigue bloqueado: ahora
+            // updateSummary se dispara al teclear en cualquier campo, y sin esto una
+            // edición durante la petición reabriría la puerta al doble envío.
+            if (!state.addingToCart) {
+                addBtn.disabled = false;
+            }
         }
 
         // ============================================================
@@ -1907,8 +1932,10 @@ function musement_certified_calendar_shortcode($atts)
                 return;
             }
 
-            if (!state.allConfirmed) {
-                showMessage(widgetId, 'error', 'Confirma todos los participantes');
+            // Red de seguridad: el botón ya solo se habilita con todo relleno, pero si
+            // algo se ha quedado a medias marcamos los campos que faltan.
+            if (!validateAllParticipants(widgetId)) {
+                showMessage(widgetId, 'error', 'Completa todos los campos obligatorios para cada participante');
                 return;
             }
 
@@ -1961,6 +1988,7 @@ function musement_certified_calendar_shortcode($atts)
             });
 
             addBtn.disabled = true;
+            state.addingToCart = true;
 
             console.log('Musement cart add payload', payload);
             fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
@@ -1983,6 +2011,7 @@ function musement_certified_calendar_shortcode($atts)
                         setTimeout(function() {
                             addBtn.textContent = 'Añadir al carrito';
                             addBtn.classList.remove('added');
+                            state.addingToCart = false;
                             addBtn.disabled = false;
                         }, 3000);
                     } else {
@@ -1992,17 +2021,20 @@ function musement_certified_calendar_shortcode($atts)
                         if (response && response.data && response.data.remote_error_data) {
                             console.error('Musement remote_error_data:', JSON.stringify(response.data.remote_error_data, null, 2));
                         }
+                        state.addingToCart = false;
                         addBtn.disabled = false;
                     }
                 } catch(e) {
                     console.error('Error parsing JSON:', e);
                     showMessage(widgetId, 'error', 'Error de respuesta: ' + text.substring(0, 200));
+                    state.addingToCart = false;
                     addBtn.disabled = false;
                 }
             })
             .catch(function(error) {
                 console.error('Error:', error);
                 showMessage(widgetId, 'error', 'Error de conexión: ' + error.message);
+                state.addingToCart = false;
                 addBtn.disabled = false;
             });
         });

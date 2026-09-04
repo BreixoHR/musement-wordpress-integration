@@ -298,37 +298,67 @@ function musement_month_availability() {
         rawurlencode($uuid)
     );
 
+    $headers = [
+        'Accept-Language' => 'es-ES',
+        'X-Musement-Application' => MUSEMENT_APPLICATION,
+        'X-Musement-Currency' => 'EUR',
+        'X-Musement-Market' => 'es',
+        'X-Musement-Version' => '3.4.0',
+    ];
+
+    // El detalle del día (musement_day_availability) sí va autenticado, así que la
+    // API le responde con el inventario del revendedor. Pidiendo el mes sin token se
+    // obtenía el catálogo público, que no tiene por qué coincidir: el calendario
+    // marcaba días que luego no tenían ni un horario reservable. Con el mismo token
+    // los dos endpoints hablan del mismo inventario. Si no hay token, se pide igual
+    // sin él en vez de romper el calendario.
+    $token = musement_get_access_token();
+    if ($token) {
+        $headers['Authorization'] = 'Bearer ' . $token;
+    }
+
     $res = wp_remote_get($url, [
-        'headers' => [
-            'Accept-Language' => 'es-ES',
-            'X-Musement-Application' => MUSEMENT_APPLICATION,
-            'X-Musement-Currency' => 'EUR',
-            'X-Musement-Market' => 'es',
-            'X-Musement-Version' => '3.4.0',
-        ]
+        'timeout' => 30,
+        'headers' => $headers,
     ]);
 
     if (is_wp_error($res)) {
         wp_send_json_error(['message' => $res->get_error_message()], 500);
     }
 
-    $data = json_decode(wp_remote_retrieve_body($res), true);
+    // El front bloquea los días que no aparecen en el mapa, así que un mapa vacío
+    // significa "este mes no tiene nada". Un error de la API no puede colarse como
+    // mes vacío o dejaría el calendario entero en gris: se devuelve como error para
+    // que el front no bloquee nada.
+    $http_code = wp_remote_retrieve_response_code($res);
+    $body = wp_remote_retrieve_body($res);
+
+    if ($http_code !== 200) {
+        error_log('[MUSEMENT] month availability HTTP ' . $http_code . ': ' . substr($body, 0, 300));
+        wp_send_json_error(['message' => 'HTTP Error: ' . $http_code, 'code' => $http_code], 500);
+    }
+
+    $data = json_decode($body, true);
+
+    if (!is_array($data)) {
+        error_log('[MUSEMENT] month availability: respuesta inesperada: ' . substr($body, 0, 300));
+        wp_send_json_error(['message' => 'Respuesta de disponibilidad no válida'], 500);
+    }
+
     $map = [];
 
-    if (is_array($data)) {
-        foreach ($data as $day) {
-            $date = $day['day'] ?? null;
-            if (!$date) continue;
-            if (strpos($date, $month) !== 0) continue;
+    foreach ($data as $day) {
+        $date = $day['day'] ?? null;
+        if (!$date) continue;
+        if (strpos($date, $month) !== 0) continue;
 
-            $status = 'available';
-            if (!empty($day['sold_out'])) {
-                $status = 'full';
-            } elseif (($day['availability'] ?? -1) <= 5) {
-                $status = 'low';
-            }
-            $map[$date] = $status;
+        $status = 'available';
+        if (!empty($day['sold_out'])) {
+            $status = 'full';
+        } elseif (($day['availability'] ?? -1) <= 5) {
+            $status = 'low';
         }
+        $map[$date] = $status;
     }
 
     wp_send_json_success(['days' => $map]);
